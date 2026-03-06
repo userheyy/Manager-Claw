@@ -21,11 +21,9 @@ const taskStats = document.getElementById("taskStats");
 const taskBoard = document.getElementById("taskBoard");
 const taskDecomposeForm = document.getElementById("taskDecomposeForm");
 const refreshTasksBtn = document.getElementById("refreshTasksBtn");
-const autoClaimBtn = document.getElementById("autoClaimBtn");
-const heartbeatTickBtn = document.getElementById("heartbeatTickBtn");
-const autoClaimAgentSelect = document.getElementById("autoClaimAgentSelect");
 const masterAgentSelect = document.getElementById("masterAgentSelect");
 const masterAgentPicker = document.getElementById("masterAgentPicker");
+const masterAgentSearch = document.getElementById("masterAgentSearch");
 const goalInput = document.getElementById("goalInput");
 const taskSearchInput = document.getElementById("taskSearchInput");
 const taskProjectFilter = document.getElementById("taskProjectFilter");
@@ -43,19 +41,12 @@ const taskDetailSummary = document.getElementById("taskDetailSummary");
 const taskDetailChecklist = document.getElementById("taskDetailChecklist");
 const taskDetailChildren = document.getElementById("taskDetailChildren");
 const taskDetailContext = document.getElementById("taskDetailContext");
-const taskDetailEvents = document.getElementById("taskDetailEvents");
-const taskDetailAgentSelect = document.getElementById("taskDetailAgentSelect");
-const taskDispatchModeSelect = document.getElementById("taskDispatchModeSelect");
-
-const taskBtnClaim = document.getElementById("taskBtnClaim");
-const taskBtnStart = document.getElementById("taskBtnStart");
-const taskBtnReview = document.getElementById("taskBtnReview");
-const taskBtnIntegrated = document.getElementById("taskBtnIntegrated");
-const taskBtnDone = document.getElementById("taskBtnDone");
-const taskBtnBlock = document.getElementById("taskBtnBlock");
-const taskBtnRelease = document.getElementById("taskBtnRelease");
-const taskBtnDispatch = document.getElementById("taskBtnDispatch");
-const taskBtnDelete = document.getElementById("taskBtnDelete");
+const taskDetailTabSummary = document.getElementById("taskDetailTabSummary");
+const taskDetailTabChildren = document.getElementById("taskDetailTabChildren");
+const taskDetailTabContext = document.getElementById("taskDetailTabContext");
+const taskDetailSectionSummary = document.getElementById("taskDetailSectionSummary");
+const taskDetailSectionChildren = document.getElementById("taskDetailSectionChildren");
+const taskDetailSectionContext = document.getElementById("taskDetailSectionContext");
 
 const groupCreateForm = document.getElementById("groupCreateForm");
 const groupTitleInput = document.getElementById("groupTitleInput");
@@ -66,11 +57,15 @@ const groupMasterAgentSelect = document.getElementById("groupMasterAgentSelect")
 const groupAgentAPicker = document.getElementById("groupAgentAPicker");
 const groupAgentBPicker = document.getElementById("groupAgentBPicker");
 const groupMasterAgentPicker = document.getElementById("groupMasterAgentPicker");
+const groupAgentASearch = document.getElementById("groupAgentASearch");
+const groupAgentBSearch = document.getElementById("groupAgentBSearch");
+const groupMasterAgentSearch = document.getElementById("groupMasterAgentSearch");
 const groupMaxRoundsInput = document.getElementById("groupMaxRoundsInput");
 const groupAutoRunInput = document.getElementById("groupAutoRunInput");
 const refreshGroupsBtn = document.getElementById("refreshGroupsBtn");
 const groupSessionList = document.getElementById("groupSessionList");
-const groupDetailPanel = document.getElementById("groupDetailPanel");
+const groupDetailDialog = document.getElementById("groupDetailDialog");
+const groupDetailCloseBtn = document.getElementById("groupDetailCloseBtn");
 const groupDetailTitle = document.getElementById("groupDetailTitle");
 const groupDetailMeta = document.getElementById("groupDetailMeta");
 const groupDetailSummary = document.getElementById("groupDetailSummary");
@@ -133,9 +128,17 @@ let milestoneDetail = null;
 let dispatchSettings = null;
 let currentGroupSessionId = null;
 let currentGroupDetail = null;
+let groupDetailDismissedSessionId = null;
+let currentTaskDetailTab = "summary";
 let liveRefreshTimer = null;
 let liveRefreshInFlight = false;
 let liveRefreshBackoffMs = 0;
+const pickerSearchState = {
+  masterAgentSelect: "",
+  groupAgentASelect: "",
+  groupAgentBSelect: "",
+  groupMasterAgentSelect: ""
+};
 const taskFilter = {
   q: "",
   projectId: "all",
@@ -337,9 +340,7 @@ function renderTaskSelectOptions() {
     .map((a) => `<option value="${a.id}">${escapeHtml(a.name)} · ${escapeHtml(a.sourceLabel)}</option>`)
     .join("");
   const masterOptions = [`<option value="">不指定主控整合</option>`, options].join("");
-  autoClaimAgentSelect.innerHTML = options;
   masterAgentSelect.innerHTML = options;
-  taskDetailAgentSelect.innerHTML = options;
   if (masterAgentSelect && masterAgentSelect.options.length > 0 && !masterAgentSelect.value) {
     const preferred = agents.find((a) => ["idle", "heartbeat_only"].includes(String(a.status || "").toLowerCase())) || agents[0];
     masterAgentSelect.value = preferred?.id || "";
@@ -370,9 +371,11 @@ function renderAgentPicker(container, targetSelect, options = {}) {
     emptyLabel = "不指定",
     emptyDesc = "留空",
     filter = () => true,
-    isDisabled = () => false
+    isDisabled = () => false,
+    searchQuery = ""
   } = options;
   const current = String(targetSelect.value || "");
+  const query = normalizeForSearch(searchQuery);
   const items = [];
   if (allowEmpty) {
     items.push({
@@ -392,8 +395,32 @@ function renderAgentPicker(container, targetSelect, options = {}) {
       selectable: !isDisabled(agent)
     });
   }
+  const visibleItems = items
+    .filter((agent) => {
+      if (!query) return true;
+      if (String(agent.id || "") === current) return true;
+      const hay = normalizeForSearch([
+        agent.name,
+        agent.role,
+        agent.statusLabel,
+        agent.statusReason,
+        agent.sourceLabel
+      ].join(" "));
+      return hay.includes(query);
+    })
+    .sort((a, b) => {
+      const aSelected = String(a.id || "") === current ? 1 : 0;
+      const bSelected = String(b.id || "") === current ? 1 : 0;
+      if (aSelected !== bSelected) return bSelected - aSelected;
+      const aAssignable = a.selectable ? 1 : 0;
+      const bAssignable = b.selectable ? 1 : 0;
+      if (aAssignable !== bAssignable) return bAssignable - aAssignable;
+      return String(a.name || "").localeCompare(String(b.name || ""), "zh-CN");
+    });
   container.innerHTML = items
-    .map((agent) => {
+    .length
+    ? visibleItems
+        .map((agent) => {
       const selected = current === String(agent.id || "");
       const disabled = !agent.selectable;
       const statusClass = mapAgentStatus(agent.status);
@@ -409,12 +436,20 @@ function renderAgentPicker(container, targetSelect, options = {}) {
             <span class="runtime-pill ${statusClass}">${escapeHtml(agent.statusLabel || "")}</span>
           </div>
           <div class="agent-pick-meta">${escapeHtml(agent.role || "")}</div>
-          <div class="agent-pick-reason">${escapeHtml(agent.statusReason || "")}</div>
+          <div class="agent-pick-reason">${escapeHtml(
+            ["idle", "heartbeat_only"].includes(String(agent.status || "").toLowerCase())
+              ? "可立即参与"
+              : agent.statusReason || ""
+          )}</div>
           <div class="agent-pick-foot">${escapeHtml(agent.sourceLabel || "")}</div>
         </button>
       `;
-    })
-    .join("");
+        })
+        .join("")
+    : `<div class="picker-empty">暂无可选 Agent</div>`;
+  if (!visibleItems.length) {
+    container.innerHTML = '<div class="picker-empty">没有匹配的 Agent，换个关键词试试。</div>';
+  }
   for (const button of container.querySelectorAll(".agent-pick-card[data-picker-value]")) {
     button.addEventListener("click", () => {
       if (button.classList.contains("disabled")) return;
@@ -432,22 +467,34 @@ function renderAgentPickers() {
   }
   renderAgentPicker(masterAgentPicker, masterAgentSelect, {
     filter: () => true,
-    isDisabled: (agent) => !["idle", "heartbeat_only"].includes(String(agent.status || "").toLowerCase())
+    isDisabled: (agent) => !["idle", "heartbeat_only"].includes(String(agent.status || "").toLowerCase()),
+    searchQuery: pickerSearchState.masterAgentSelect
   });
   renderAgentPicker(groupAgentAPicker, groupAgentASelect, {
     filter: () => true,
-    isDisabled: (agent) => !["idle", "heartbeat_only"].includes(String(agent.status || "").toLowerCase())
+    isDisabled: (agent) => !["idle", "heartbeat_only"].includes(String(agent.status || "").toLowerCase()),
+    searchQuery: pickerSearchState.groupAgentASelect
   });
   renderAgentPicker(groupAgentBPicker, groupAgentBSelect, {
     filter: (agent) => String(agent.id || "") !== String(groupAgentASelect?.value || ""),
-    isDisabled: (agent) => !["idle", "heartbeat_only"].includes(String(agent.status || "").toLowerCase())
+    isDisabled: (agent) => !["idle", "heartbeat_only"].includes(String(agent.status || "").toLowerCase()),
+    searchQuery: pickerSearchState.groupAgentBSelect
   });
   renderAgentPicker(groupMasterAgentPicker, groupMasterAgentSelect, {
     allowEmpty: true,
     emptyLabel: "不指定主控",
     emptyDesc: "讨论结束后不自动整合",
     filter: () => true,
-    isDisabled: () => false
+    isDisabled: () => false,
+    searchQuery: pickerSearchState.groupMasterAgentSelect
+  });
+}
+
+function bindPickerSearch(input, key) {
+  if (!input) return;
+  input.addEventListener("input", () => {
+    pickerSearchState[key] = input.value || "";
+    renderAgentPickers();
   });
 }
 
@@ -595,10 +642,11 @@ function renderGroupMessages(messages) {
   groupMessages.scrollTop = groupMessages.scrollHeight;
 }
 
-function renderGroupDetail(session) {
+function renderGroupDetail(session, options = {}) {
+  const { openDialog = true } = options;
   currentGroupDetail = session;
   currentGroupSessionId = session.id;
-  groupDetailPanel.style.display = "block";
+  if (openDialog && groupDetailDialog && !groupDetailDialog.open) groupDetailDialog.showModal();
   const status = String(session.status || "");
   const isRunning = status === "running";
   groupDetailTitle.textContent = session.title;
@@ -645,16 +693,18 @@ async function refreshGroupSessions() {
     if (!hit) {
       currentGroupSessionId = null;
       currentGroupDetail = null;
-      groupDetailPanel.style.display = "none";
+      if (groupDetailDialog?.open) groupDetailDialog.close();
       return;
     }
     try {
       const detail = await requestJson(`/api/group-sessions/${currentGroupSessionId}`);
-      renderGroupDetail(detail.session);
+      renderGroupDetail(detail.session, {
+        openDialog: Boolean(groupDetailDialog?.open) && groupDetailDismissedSessionId !== currentGroupSessionId
+      });
     } catch {
       currentGroupSessionId = null;
       currentGroupDetail = null;
-      groupDetailPanel.style.display = "none";
+      if (groupDetailDialog?.open) groupDetailDialog.close();
     }
   }
 }
@@ -678,10 +728,11 @@ async function createGroupSession(e) {
   });
   groupGoalInput.value = "";
   currentGroupSessionId = data.session?.id || null;
+  groupDetailDismissedSessionId = null;
   await refreshAll();
   if (currentGroupSessionId) {
     const detail = await requestJson(`/api/group-sessions/${currentGroupSessionId}`);
-    renderGroupDetail(detail.session);
+    renderGroupDetail(detail.session, { openDialog: true });
   }
 }
 
@@ -770,7 +821,7 @@ async function groupSessionAction(action) {
     await requestJson(url, { method: "DELETE" });
     currentGroupSessionId = null;
     currentGroupDetail = null;
-    groupDetailPanel.style.display = "none";
+    if (groupDetailDialog?.open) groupDetailDialog.close();
     await refreshGroupSessions();
     return;
   }
@@ -791,25 +842,8 @@ async function groupSessionAction(action) {
   await refreshAll();
 }
 
-function setTaskActionVisibility(task) {
-  const show = (el, ok) => {
-    el.style.display = ok ? "inline-block" : "none";
-  };
-  show(taskBtnClaim, task.status === "todo" || task.status === "blocked");
-  show(taskBtnStart, task.status === "claimed");
-  show(taskBtnReview, task.status === "in_progress");
-  show(
-    taskBtnIntegrated,
-    task.level === 1 && ["todo", "claimed", "in_progress", "review", "integrated", "blocked"].includes(task.status)
-  );
-  show(taskBtnDone, task.level === 1 ? false : task.status === "review");
-  show(taskBtnBlock, ["claimed", "in_progress", "review", "integrated", "accepted"].includes(task.status));
-  show(taskBtnRelease, ["claimed", "in_progress", "review", "blocked"].includes(task.status) && task.level !== 1);
-  show(taskBtnDispatch, ["claimed", "in_progress"].includes(task.status));
-  show(taskBtnDelete, Boolean(task && task.id));
-}
-
-async function openMilestonePage(milestoneId) {
+async function openMilestonePage(milestoneId, options = {}) {
+  const { scrollIntoView = false } = options;
   const data = await requestJson(`/api/milestones/${milestoneId}`);
   milestoneDetail = data;
   currentMilestoneId = milestoneId;
@@ -829,46 +863,90 @@ async function openMilestonePage(milestoneId) {
     '<div class="detail-title">里程碑整合</div><div class="task-meta">子任务全部完成后，点击“主虾整合产出”，由主控Agent汇总最终结果并回写里程碑。</div>';
 
   taskDetailChildren.innerHTML = `<div class="detail-title">子任务 (${data.progress.done}/${data.progress.total})</div>${
-    data.children
-      .map(
-        (c) => `
-      <div class="child-row" data-task-select="${c.id}">
-        <div>
-          <strong>${escapeHtml(c.title)}</strong>
-          <div class="task-meta">L${Number(c.execLevel || 1)} · ${STATUS_LABEL[c.status] || c.status} · 负责人 ${escapeHtml(agentName(c.owner))}</div>
-          <div class="task-meta">结果：${escapeHtml(c.summary || "(暂无)")}</div>
+    data.children?.length
+      ? `
+        <div class="context-table-wrap child-table-wrap">
+          <table class="context-table child-table">
+            <thead>
+              <tr>
+                <th>子任务</th>
+                <th>层级</th>
+                <th>状态</th>
+                <th>负责人</th>
+                <th>结果</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${data.children
+                .map(
+                  (c) => `
+                    <tr data-task-select="${c.id}">
+                      <td>${escapeHtml(c.title || "-")}</td>
+                      <td>L${Number(c.execLevel || 1)}</td>
+                      <td>${escapeHtml(STATUS_LABEL[c.status] || c.status || "-")}</td>
+                      <td>${escapeHtml(agentName(c.owner))}</td>
+                      <td>${escapeHtml(c.summary || "(暂无)")}</td>
+                    </tr>
+                  `
+                )
+                .join("")}
+            </tbody>
+          </table>
         </div>
-        <button class="mini-btn" data-task-select-btn="${c.id}">处理</button>
-      </div>
-    `
-      )
-      .join("") || "<div class='child-row'>暂无子任务</div>"
+      `
+      : "<div class='child-row'>暂无子任务</div>"
   }`;
 
   taskDetailContext.innerHTML = `<div class="detail-title">可复用上下文（上游结果）</div>${
     (data.carryContext || []).length
-      ? data.carryContext
-          .map(
-            (x) =>
-              `<div class="child-row"><div>${escapeHtml(x.title)}：${escapeHtml(x.summary || "")}</div><span>${escapeHtml(
-                x.artifactPath || x.artifact || ""
-              )}${x.artifact && x.artifactPath && x.artifactExists === false ? " (未找到)" : ""}</span></div>`
-          )
-          .join("")
+      ? `
+        <div class="context-table-wrap">
+          <table class="context-table">
+            <thead>
+              <tr>
+                <th>上游任务</th>
+                <th>摘要</th>
+                <th>产物</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${data.carryContext
+                .map(
+                  (x) => `
+                    <tr>
+                      <td>${escapeHtml(x.title || "-")}</td>
+                      <td>${escapeHtml(x.summary || "-")}</td>
+                      <td>${escapeHtml(x.artifactPath || x.artifact || "-")}${x.artifact && x.artifactPath && x.artifactExists === false ? " (未找到)" : ""}</td>
+                    </tr>
+                  `
+                )
+                .join("")}
+            </tbody>
+          </table>
+        </div>
+      `
       : "<div class='child-row'>暂无可复用结果</div>"
   }`;
 
-  taskDetailEvents.innerHTML = `<div class="detail-title">流程事件</div>${
-    (data.events || []).length
-      ? data.events
-          .map((e) => `<div class="child-row"><div>${escapeHtml(e.type)}</div><span>${fmtDate(e.ts)}</span></div>`)
-          .join("")
-      : "<div class='child-row'>暂无事件</div>"
-  }`;
-
-  setTaskActionVisibility(m);
   taskDetailPage.style.display = "block";
-  taskDetailPage.scrollIntoView({ behavior: "smooth", block: "start" });
+  setTaskDetailTab(currentTaskDetailTab);
+  if (scrollIntoView) {
+    taskDetailPage.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+function setTaskDetailTab(tab) {
+  currentTaskDetailTab = tab;
+  const summary = tab === "summary";
+  const children = tab === "children";
+  const context = tab === "context";
+
+  taskDetailTabSummary?.classList.toggle("active", summary);
+  taskDetailTabChildren?.classList.toggle("active", children);
+  taskDetailTabContext?.classList.toggle("active", context);
+  taskDetailSectionSummary?.classList.toggle("active", summary);
+  taskDetailSectionChildren?.classList.toggle("active", children);
+  taskDetailSectionContext?.classList.toggle("active", context);
 }
 
 function selectTaskForAction(taskId) {
@@ -877,92 +955,6 @@ function selectTaskForAction(taskId) {
   currentTaskId = taskId;
   taskDetailMeta.textContent = `${task.id} · 状态 ${STATUS_LABEL[task.status] || task.status} · 负责人 ${agentName(task.owner)} · （当前操作对象）`;
   taskDetailSummary.textContent = task.summary ? `任务结论：${task.summary}` : "暂无任务结论";
-  if (task.owner) taskDetailAgentSelect.value = task.owner;
-  setTaskActionVisibility(task);
-}
-
-async function claimTask(taskId, agentId, force = false) {
-  await requestJson(`/api/tasks/${taskId}/claim`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ agentId, force })
-  });
-  await refreshAll();
-  if (currentMilestoneId) await openMilestonePage(currentMilestoneId);
-}
-
-async function releaseTask(taskId, agentId, force = false) {
-  await requestJson(`/api/tasks/${taskId}/release`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ agentId, force })
-  });
-  await refreshAll();
-  if (currentMilestoneId) await openMilestonePage(currentMilestoneId);
-}
-
-async function updateTaskStatus(taskId, status) {
-  const task = getTaskById(taskId);
-  const summary = status === "done" ? prompt("完成结论（会被后续子任务复用）", task?.summary || "") : "";
-  await requestJson(`/api/tasks/${taskId}/status`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ status, summary: summary || "", rewardScore: status === "done" ? task?.score : undefined, syncTaskMd: true })
-  });
-  await refreshAll();
-  if (currentMilestoneId) await openMilestonePage(currentMilestoneId);
-}
-
-async function integrateMilestone(milestoneId) {
-  const masterAgentId = (taskDetailAgentSelect.value || masterAgentSelect.value || "").trim();
-  if (!masterAgentId) throw new Error("请先选择主虾");
-  const mode = taskDispatchModeSelect?.value === "sessions_spawn" ? "sessions_spawn" : "sessions_send";
-  await requestJson(`/api/milestones/${milestoneId}/integrate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ masterAgentId, mode })
-  });
-  await refreshAll();
-  if (currentMilestoneId) await openMilestonePage(currentMilestoneId);
-}
-
-async function dispatchTask(taskId) {
-  const task = getTaskById(taskId);
-  const agentId = task?.owner || autoClaimAgentSelect.value;
-  if (!agentId) throw new Error("请先选择或认领负责人");
-  const mode = taskDispatchModeSelect?.value === "sessions_spawn" ? "sessions_spawn" : "sessions_send";
-  await requestJson(`/api/tasks/${taskId}/dispatch`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ agentId, mode })
-  });
-  await refreshAll();
-  if (currentMilestoneId) await openMilestonePage(currentMilestoneId);
-}
-
-async function heartbeatTick() {
-  const agentId = (taskDetailAgentSelect.value || autoClaimAgentSelect.value || "").trim();
-  if (!agentId) throw new Error("请先选择执行心跳的 Agent");
-  const mode = taskDispatchModeSelect?.value === "sessions_spawn" ? "sessions_spawn" : "sessions_send";
-  const payload = { agentId, mode };
-  if (currentMilestoneId) payload.milestoneId = currentMilestoneId;
-  await requestJson("/api/tasks/heartbeat/tick", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  await refreshAll();
-  if (currentMilestoneId) await openMilestonePage(currentMilestoneId);
-}
-
-async function deleteTask(taskId) {
-  await requestJson(`/api/tasks/${taskId}`, { method: "DELETE" });
-  await refreshAll();
-  if (currentMilestoneId === taskId) {
-    showTaskDashboard();
-    return;
-  }
-  if (currentMilestoneId) await openMilestonePage(currentMilestoneId);
 }
 
 function setActiveTab(tab) {
@@ -1140,28 +1132,11 @@ async function decomposeGoal(e) {
     goalInput.value = "";
     await refreshTasks();
     if (data.milestone?.id) {
-      await openMilestonePage(data.milestone.id);
+      await openMilestonePage(data.milestone.id, { scrollIntoView: true });
       history.replaceState(null, "", `#milestone/${data.milestone.id}`);
     }
   } catch (err) {
     alert(`拆解失败: ${err.message}`);
-  }
-}
-
-async function autoClaimOne() {
-  try {
-    const mode = taskDispatchModeSelect?.value === "sessions_spawn" ? "sessions_spawn" : "sessions_send";
-    const payload = { agentId: autoClaimAgentSelect.value, mode };
-    if (currentMilestoneId) payload.milestoneId = currentMilestoneId;
-    await requestJson("/api/tasks/heartbeat/tick", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    await refreshTasks();
-    if (currentMilestoneId) await openMilestonePage(currentMilestoneId);
-  } catch (err) {
-    alert(`自动认领并执行失败: ${err.message}`);
   }
 }
 
@@ -1242,7 +1217,7 @@ function showTaskDashboard() {
 function tryOpenByHash() {
   const m = /^#milestone\/(.+)$/.exec(location.hash || "");
   if (!m) return;
-  openMilestonePage(m[1]).catch(() => {});
+  openMilestonePage(m[1], { scrollIntoView: true }).catch(() => {});
 }
 
 async function boot() {
@@ -1272,6 +1247,10 @@ saveDispatchSettings?.addEventListener("click", async () => {
   }
 });
 dispatchModeSelect?.addEventListener("change", renderDispatchModeHint);
+bindPickerSearch(masterAgentSearch, "masterAgentSelect");
+bindPickerSearch(groupAgentASearch, "groupAgentASelect");
+bindPickerSearch(groupAgentBSearch, "groupAgentBSelect");
+bindPickerSearch(groupMasterAgentSearch, "groupMasterAgentSelect");
 
 closeDialog.addEventListener("click", closeAgentDialog);
 closeDialogTop.addEventListener("click", closeAgentDialog);
@@ -1304,14 +1283,6 @@ dialog.addEventListener("click", (e) => {
 
 taskDecomposeForm.addEventListener("submit", decomposeGoal);
 refreshTasksBtn.addEventListener("click", refreshTasks);
-autoClaimBtn.addEventListener("click", autoClaimOne);
-heartbeatTickBtn.addEventListener("click", async () => {
-  try {
-    await heartbeatTick();
-  } catch (err) {
-    alert(`心跳执行失败: ${err.message}`);
-  }
-});
 taskSearchInput?.addEventListener("input", () => {
   renderTaskStats();
   renderTaskBoard();
@@ -1339,114 +1310,15 @@ taskBoard.addEventListener("click", (e) => {
   const card = e.target.closest("[data-milestone-open]");
   if (!card) return;
   const milestoneId = card.getAttribute("data-milestone-open");
-  openMilestonePage(milestoneId)
+  openMilestonePage(milestoneId, { scrollIntoView: true })
     .then(() => history.replaceState(null, "", `#milestone/${milestoneId}`))
     .catch((err) => alert(`打开详情失败: ${err.message}`));
 });
 
 taskDetailBack.addEventListener("click", showTaskDashboard);
-
-taskDetailChildren.addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-task-select-btn]");
-  if (!btn) return;
-  const taskId = btn.getAttribute("data-task-select-btn");
-  selectTaskForAction(taskId);
-});
-
-taskBtnClaim.addEventListener("click", async () => {
-  if (!currentTaskId) return;
-  const picked = taskDetailAgentSelect.value || autoClaimAgentSelect.value;
-  try {
-    await claimTask(currentTaskId, picked, false);
-  } catch (err) {
-    alert(`认领失败: ${err.message}`);
-  }
-});
-
-taskBtnStart.addEventListener("click", async () => {
-  if (!currentTaskId) return;
-  try {
-    await updateTaskStatus(currentTaskId, "in_progress");
-  } catch (err) {
-    alert(`开始失败: ${err.message}`);
-  }
-});
-
-taskBtnReview.addEventListener("click", async () => {
-  if (!currentTaskId) return;
-  try {
-    await updateTaskStatus(currentTaskId, "review");
-  } catch (err) {
-    alert(`提审失败: ${err.message}`);
-  }
-});
-
-taskBtnIntegrated.addEventListener("click", async () => {
-  if (!currentTaskId) return;
-  try {
-    const task = getTaskById(currentTaskId);
-    if (!task || task.level !== 1) {
-      await updateTaskStatus(currentTaskId, "integrated");
-      return;
-    }
-    await integrateMilestone(currentTaskId);
-  } catch (err) {
-    alert(`主虾整合失败: ${err.message}`);
-  }
-});
-
-taskBtnDone.addEventListener("click", async () => {
-  if (!currentTaskId) return;
-  try {
-    await updateTaskStatus(currentTaskId, "done");
-  } catch (err) {
-    alert(`完成失败: ${err.message}`);
-  }
-});
-
-taskBtnBlock.addEventListener("click", async () => {
-  if (!currentTaskId) return;
-  try {
-    await updateTaskStatus(currentTaskId, "blocked");
-  } catch (err) {
-    alert(`阻塞失败: ${err.message}`);
-  }
-});
-
-taskBtnRelease.addEventListener("click", async () => {
-  if (!currentTaskId) return;
-  const picked = taskDetailAgentSelect.value || autoClaimAgentSelect.value;
-  try {
-    await releaseTask(currentTaskId, picked, false);
-  } catch (err) {
-    alert(`释放失败: ${err.message}`);
-  }
-});
-
-taskBtnDispatch.addEventListener("click", async () => {
-  if (!currentTaskId) return;
-  try {
-    await dispatchTask(currentTaskId);
-  } catch (err) {
-    alert(`派发失败: ${err.message}`);
-  }
-});
-
-taskBtnDelete.addEventListener("click", async () => {
-  if (!currentTaskId) return;
-  const task = getTaskById(currentTaskId);
-  if (!task) return;
-  const tip =
-    task.level === 1
-      ? "确认删除该大任务？会级联删除所有子任务和流程事件。"
-      : "确认删除该子任务？";
-  if (!confirm(tip)) return;
-  try {
-    await deleteTask(currentTaskId);
-  } catch (err) {
-    alert(`删除失败: ${err.message}`);
-  }
-});
+taskDetailTabSummary?.addEventListener("click", () => setTaskDetailTab("summary"));
+taskDetailTabChildren?.addEventListener("click", () => setTaskDetailTab("children"));
+taskDetailTabContext?.addEventListener("click", () => setTaskDetailTab("context"));
 
 groupCreateForm?.addEventListener("submit", async (e) => {
   try {
@@ -1462,9 +1334,25 @@ groupSessionList?.addEventListener("click", async (e) => {
   const id = card.getAttribute("data-group-open");
   try {
     const data = await requestJson(`/api/group-sessions/${id}`);
-    renderGroupDetail(data.session);
+    groupDetailDismissedSessionId = null;
+    renderGroupDetail(data.session, { openDialog: true });
   } catch (err) {
     alert(`读取讨论详情失败: ${err.message}`);
+  }
+});
+groupDetailCloseBtn?.addEventListener("click", () => {
+  groupDetailDismissedSessionId = currentGroupSessionId;
+  if (groupDetailDialog?.open) groupDetailDialog.close();
+});
+groupDetailDialog?.addEventListener("cancel", (e) => {
+  e.preventDefault();
+  groupDetailDismissedSessionId = currentGroupSessionId;
+  groupDetailDialog.close();
+});
+groupDetailDialog?.addEventListener("click", (e) => {
+  if (e.target === groupDetailDialog) {
+    groupDetailDismissedSessionId = currentGroupSessionId;
+    groupDetailDialog.close();
   }
 });
 groupStartBtn?.addEventListener("click", () => groupSessionAction("start").catch((err) => alert(`开始失败: ${err.message}`)));

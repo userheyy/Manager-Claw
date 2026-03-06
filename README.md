@@ -536,3 +536,32 @@ Manager-Claw 当前定位是：
 - 用来验证“拆解 -> 调度 -> 讨论 -> 整合”这套模式的本地中控前台
 
 它不是 OpenClaw 官方替代品，也不是通用 Agent 平台。
+
+---
+
+## Windows 本地启动与排障经验
+
+这几轮迭代里，Windows 本地启动最容易踩的是下面几件事：
+
+- 管理台默认端口是 `3000`，但本项目实际建议固定用 `3302`。如果不显式传 `PORT=3302`，很容易撞上本机已有服务。
+- 当前推荐的 Agent 根目录是本机 `.openclaw`，不要依赖早期 Docker 工作区。启动时建议显式传入：`CLAW_AGENTS_ROOTS=C:\Users\<用户名>\.openclaw`。
+- 在 Windows 下，后台拉起 Node 服务时，`cmd /c` 的稳定性高于复杂的 PowerShell 拼接命令。实践里更稳的方式是先设环境变量，再后台启动 `node server.js`。
+- 启动后不要只看浏览器页面，先检查健康接口：`http://localhost:3302/health`。只要这里返回 `ok: true`，前端通常就是缓存或静态资源问题。
+- 如果页面样式或交互和代码不一致，优先强刷浏览器（`Ctrl+F5`）。这个项目前端缓存命中率高，静态资源版本没有更新时很容易误判“改动没生效”。
+- OpenClaw 的“外部活跃”与“心跳巡检”需要区分。仅仅看到 session 最近有写入，不代表 Agent 真正在忙主任务；心跳不应该阻塞调度。
+- PowerShell 终端里看到中文乱码，不应直接推断为文件内容损坏。优先以 Web 页面渲染结果、实际文件内容和接口返回为准。
+
+当前推荐的 Windows 本地启动方式：
+
+```bash
+set PORT=3302
+set CLAW_AGENTS_ROOTS=C:\Users\<用户名>\.openclaw
+set DISPATCH_MODE=central
+node server.js
+```
+
+启动后验证：
+
+```bash
+curl http://localhost:3302/health
+```

@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;700;900&family=Sora:wght@400;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=20260306i" />
+    <link rel="stylesheet" href="./styles.css?v=20260306p" />
   </head>
   <body>
     <div class="bg-grid"></div>
@@ -49,6 +49,7 @@
                   <strong>选择主虾</strong>
                   <span>直接显示忙闲状态与占用原因</span>
                 </div>
+                <input id="masterAgentSearch" class="picker-search" type="text" placeholder="搜索主虾名称 / 角色 / 状态" />
                 <div id="masterAgentPicker" class="agent-picker-grid"></div>
                 <select id="masterAgentSelect" class="visually-hidden"></select>
               </div>
@@ -62,11 +63,7 @@
           <div class="panel board-panel">
             <div class="board-toolbar">
               <button id="refreshTasksBtn" class="ghost-btn">刷新</button>
-              <div class="inline-row">
-                <select id="autoClaimAgentSelect"></select>
-                <button id="autoClaimBtn" class="ghost-btn" type="button">自动认领并执行</button>
-                <button id="heartbeatTickBtn" class="ghost-btn" type="button">心跳认领并执行</button>
-              </div>
+              <div class="task-mode-note">当前模式：主虾拆解 → 子任务自动流转 → 主虾整合</div>
             </div>
             <div class="task-filter-row">
               <input id="taskSearchInput" type="text" placeholder="搜索里程碑标题 / ID / 项目名" />
@@ -101,27 +98,22 @@
             <div id="taskDetailMeta" class="task-detail-meta"></div>
             <div id="taskDetailProgress" class="task-progress-wrap"></div>
             <div id="taskDetailDesc" class="task-detail-desc"></div>
-            <div id="taskDetailSummary" class="task-detail-summary"></div>
-            <div id="taskDetailChecklist" class="task-detail-checklist"></div>
-            <div id="taskDetailChildren" class="task-detail-children"></div>
-            <div id="taskDetailContext" class="task-detail-children"></div>
-            <div id="taskDetailEvents" class="task-detail-children"></div>
-            <div class="task-detail-controls">
-              <select id="taskDetailAgentSelect"></select>
-              <select id="taskDispatchModeSelect">
-                <option value="sessions_send">sessions_send</option>
-                <option value="sessions_spawn">sessions_spawn</option>
-              </select>
-              <button id="taskBtnClaim" class="mini-btn" type="button">认领</button>
-              <button id="taskBtnStart" class="mini-btn" type="button">开始</button>
-              <button id="taskBtnReview" class="mini-btn" type="button">提审</button>
-              <button id="taskBtnIntegrated" class="mini-btn" type="button">主虾整合产出</button>
-              <button id="taskBtnDone" class="mini-btn" type="button">完成</button>
-              <button id="taskBtnBlock" class="mini-btn danger" type="button">阻塞</button>
-              <button id="taskBtnRelease" class="mini-btn danger" type="button">释放认领</button>
-              <button id="taskBtnDispatch" class="mini-btn" type="button">派发执行</button>
-              <button id="taskBtnDelete" class="mini-btn danger" type="button">删除任务</button>
+            <div class="task-detail-tabs" role="tablist" aria-label="任务详情内容切换">
+              <button id="taskDetailTabSummary" class="task-detail-tab active" type="button">里程碑结论</button>
+              <button id="taskDetailTabChildren" class="task-detail-tab" type="button">子任务</button>
+              <button id="taskDetailTabContext" class="task-detail-tab" type="button">可复用上下文</button>
             </div>
+            <section id="taskDetailSectionSummary" class="task-detail-section active">
+              <div id="taskDetailSummary" class="task-detail-summary"></div>
+              <div id="taskDetailChecklist" class="task-detail-checklist"></div>
+            </section>
+            <section id="taskDetailSectionChildren" class="task-detail-section">
+              <div id="taskDetailChildren" class="task-detail-children"></div>
+            </section>
+            <section id="taskDetailSectionContext" class="task-detail-section">
+              <div id="taskDetailContext" class="task-detail-children"></div>
+            </section>
+            <div class="task-detail-passive-note">该里程碑采用自动流转策略，子任务派发、执行与整合由系统统一编排。</div>
           </section>
         </section>
 
@@ -129,73 +121,76 @@
           <div class="section-title-row">
             <h2>AB 无领导讨论组</h2>
           </div>
-          <div class="group-layout">
-            <form id="groupCreateForm" class="panel">
+          <div class="group-workspace">
+            <form id="groupCreateForm" class="panel group-create-rail">
               <h3>创建双人讨论</h3>
-              <input id="groupTitleInput" type="text" placeholder="讨论标题（可选）" />
-              <textarea id="groupGoalInput" rows="4" placeholder="讨论目标，例如：比较两套部署策略并给出最终建议" required></textarea>
-              <div class="picker-stack">
-                <div class="picker-block">
-                  <div class="picker-head">
-                    <strong>A 角色</strong>
-                    <span>先发言的一方</span>
-                  </div>
-                  <div id="groupAgentAPicker" class="agent-picker-grid compact"></div>
-                  <select id="groupAgentASelect" class="visually-hidden"></select>
+              <div class="group-create-grid">
+                <div class="group-create-copy">
+                  <input id="groupTitleInput" type="text" placeholder="讨论标题（可选）" />
+                  <textarea id="groupGoalInput" rows="4" placeholder="讨论目标，例如：比较两套部署策略并给出最终建议" required></textarea>
                 </div>
-                <div class="picker-block">
-                  <div class="picker-head">
-                    <strong>B 角色</strong>
-                    <span>与 A 串行轮流讨论</span>
+                <div class="group-role-rails">
+                  <div class="picker-block picker-block-rail">
+                    <div class="picker-head">
+                      <strong>A 角色</strong>
+                      <span>先发言的一方</span>
+                    </div>
+                    <input id="groupAgentASearch" class="picker-search" type="text" placeholder="搜索 A 角色" />
+                    <div id="groupAgentAPicker" class="agent-picker-grid compact rail"></div>
+                    <select id="groupAgentASelect" class="visually-hidden"></select>
                   </div>
-                  <div id="groupAgentBPicker" class="agent-picker-grid compact"></div>
-                  <select id="groupAgentBSelect" class="visually-hidden"></select>
+                  <div class="picker-block picker-block-rail">
+                    <div class="picker-head">
+                      <strong>B 角色</strong>
+                      <span>与 A 串行轮流讨论</span>
+                    </div>
+                    <input id="groupAgentBSearch" class="picker-search" type="text" placeholder="搜索 B 角色" />
+                    <div id="groupAgentBPicker" class="agent-picker-grid compact rail"></div>
+                    <select id="groupAgentBSelect" class="visually-hidden"></select>
+                  </div>
+                  <div class="picker-block picker-block-rail">
+                    <div class="picker-head">
+                      <strong>主控整合</strong>
+                      <span>讨论结束后谁来做收官报告</span>
+                    </div>
+                    <input id="groupMasterAgentSearch" class="picker-search" type="text" placeholder="搜索主控角色" />
+                    <div id="groupMasterAgentPicker" class="agent-picker-grid compact rail"></div>
+                    <select id="groupMasterAgentSelect" class="visually-hidden"></select>
+                  </div>
                 </div>
-                <div class="picker-block">
-                  <div class="picker-head">
-                    <strong>主控整合</strong>
-                    <span>讨论结束后谁来做收官报告</span>
+                <div class="group-create-actions">
+                  <div class="group-control-card">
+                    <div class="group-control-head">
+                      <strong>讨论节奏</strong>
+                      <span>决定最多跑几轮，以及是否自动续推</span>
+                    </div>
+                    <div class="group-control-row">
+                      <label class="group-rounds-box">
+                        <span class="group-control-label">最大轮次</span>
+                        <input id="groupMaxRoundsInput" type="number" min="1" max="20" value="6" />
+                      </label>
+                      <label class="group-toggle-card">
+                        <input id="groupAutoRunInput" type="checkbox" checked />
+                        <span class="group-toggle-copy">
+                          <strong>自动轮询推进</strong>
+                          <small>创建后自动串行让 A/B 继续说话</small>
+                        </span>
+                      </label>
+                    </div>
                   </div>
-                  <div id="groupMasterAgentPicker" class="agent-picker-grid compact"></div>
-                  <select id="groupMasterAgentSelect" class="visually-hidden"></select>
+                  <button class="primary-btn group-create-submit" type="submit">创建讨论</button>
+                  <p class="tip">仅支持 A/B 两位 Agent，串行轮次对话，达到验收条件自动结束。</p>
                 </div>
               </div>
-              <div class="inline-row">
-                <input id="groupMaxRoundsInput" type="number" min="1" max="20" value="6" />
-                <label class="checkline"><input id="groupAutoRunInput" type="checkbox" checked /> 自动轮询推进</label>
-              </div>
-              <button class="primary-btn" type="submit">创建讨论</button>
-              <p class="tip">仅支持 A/B 两位 Agent，串行轮次对话，达到验收条件自动结束。</p>
             </form>
-            <section class="panel">
+            <section class="panel group-session-rail-panel">
               <div class="board-toolbar">
                 <h3 style="margin: 0">讨论会话</h3>
                 <button id="refreshGroupsBtn" class="ghost-btn" type="button">刷新</button>
               </div>
-              <div id="groupSessionList" class="group-session-list"></div>
+              <div id="groupSessionList" class="group-session-list rail"></div>
             </section>
           </div>
-
-          <section id="groupDetailPanel" class="panel" style="margin-top: 12px; display: none">
-            <div class="board-toolbar">
-              <h3 id="groupDetailTitle" style="margin: 0">讨论详情</h3>
-              <div class="inline-row">
-                <button id="groupStartBtn" class="mini-btn" type="button">开始</button>
-                <button id="groupPauseBtn" class="mini-btn" type="button">暂停</button>
-                <button id="groupTickBtn" class="mini-btn" type="button">推进一轮</button>
-                <button id="groupAbortBtn" class="mini-btn danger" type="button">中止</button>
-                <button id="groupDeleteBtn" class="mini-btn danger" type="button">删除</button>
-              </div>
-            </div>
-            <div id="groupDetailMeta" class="task-detail-meta"></div>
-            <div id="groupDetailSummary" class="task-detail-summary"></div>
-            <div id="groupDetailReport" class="task-detail-children" style="margin-top: 10px"></div>
-            <div class="task-detail-controls">
-              <input id="groupExportFileName" type="text" placeholder="导出文件名（可选）" />
-              <button id="groupExportBtn" class="mini-btn" type="button">导出 Markdown</button>
-            </div>
-            <div id="groupMessages" class="chat-messages" style="margin-top: 10px; min-height: 340px"></div>
-          </section>
         </section>
 
         <section id="agentsView" style="display: none">
@@ -311,6 +306,40 @@
       </section>
     </dialog>
 
-    <script src="./main.js?v=20260306g" type="module"></script>
+    <dialog id="groupDetailDialog" class="group-detail-dialog">
+      <div class="group-detail-shell">
+        <div class="group-detail-topbar">
+          <div>
+            <div class="group-detail-kicker">讨论会话详情</div>
+            <h3 id="groupDetailTitle" style="margin: 4px 0 0">讨论详情</h3>
+          </div>
+          <div class="inline-row">
+            <button id="groupStartBtn" class="mini-btn" type="button">开始</button>
+            <button id="groupPauseBtn" class="mini-btn" type="button">暂停</button>
+            <button id="groupTickBtn" class="mini-btn" type="button">推进一轮</button>
+            <button id="groupAbortBtn" class="mini-btn danger" type="button">中止</button>
+            <button id="groupDeleteBtn" class="mini-btn danger" type="button">删除</button>
+            <button id="groupDetailCloseBtn" class="ghost-btn" type="button">关闭</button>
+          </div>
+        </div>
+        <div class="group-detail-body">
+          <section class="group-detail-summary-column">
+            <div id="groupDetailMeta" class="task-detail-meta"></div>
+            <div id="groupDetailSummary" class="task-detail-summary"></div>
+            <div id="groupDetailReport" class="task-detail-children" style="margin-top: 10px"></div>
+            <div class="task-detail-controls">
+              <input id="groupExportFileName" type="text" placeholder="导出文件名（可选）" />
+              <button id="groupExportBtn" class="mini-btn" type="button">导出 Markdown</button>
+            </div>
+          </section>
+          <section class="group-detail-transcript-column">
+            <div class="group-detail-kicker">讨论过程</div>
+            <div id="groupMessages" class="chat-messages group-chat-messages"></div>
+          </section>
+        </div>
+      </div>
+    </dialog>
+
+    <script src="./main.js?v=20260306o" type="module"></script>
   </body>
 </html>

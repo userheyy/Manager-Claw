@@ -1495,6 +1495,7 @@ function resolveAgentOccupancy(agentId, taskStore = null, groupStore = null, opt
   const taskCount = countActiveOwnedTasks(agentId, taskStore);
   const groupCount = countActiveGroupSessions(agentId, groupStore, options.excludeGroupSessionId || "");
   const external = inspectExternalAgentActivity(parsed.source, parsed.dirName);
+  const treatExternalAsAssignable = Boolean(options.treatExternalAsAssignable);
   if (taskCount > 0 || groupCount > 0) {
     const reasons = [];
     if (taskCount > 0) reasons.push(`任务占用 ${taskCount}`);
@@ -1523,6 +1524,18 @@ function resolveAgentOccupancy(agentId, taskStore = null, groupStore = null, opt
         groupCount,
         externalActiveAt: external.latestAt,
         statusSource: "heartbeat"
+      };
+    }
+    if (treatExternalAsAssignable) {
+      return {
+        status: "busy_external",
+        statusLabel: "外部活跃",
+        statusReason: `OpenClaw 会话最近仍在写入（${fmtShortAgo(external.latestAt)}），但已允许当前讨论继续`,
+        assignable: true,
+        taskCount,
+        groupCount,
+        externalActiveAt: external.latestAt,
+        statusSource: "external_advisory"
       };
     }
     return {
@@ -2301,7 +2314,10 @@ async function executeGroupSessionTick(sessionId, trigger = "manual") {
     }
 
     const speakerId = session.turnAgentId || session.agentA;
-    const speakerOccupancy = resolveAgentOccupancy(speakerId, null, null, { excludeGroupSessionId: id });
+    const speakerOccupancy = resolveAgentOccupancy(speakerId, null, null, {
+      excludeGroupSessionId: id,
+      treatExternalAsAssignable: true
+    });
     if (!speakerOccupancy.assignable) {
       await mutateGroupStore(async (latestStore) => {
         const i = (latestStore.sessions || []).findIndex((x) => String(x.id || "") === id);
@@ -3777,8 +3793,19 @@ app.post("/api/group-sessions/:sessionId/start", async (req, res) => {
         e.code = 409;
         throw e;
       }
-      const occupancyA = resolveAgentOccupancy(cur.agentA);
-      const occupancyB = resolveAgentOccupancy(cur.agentB);
+      const allowExternalResume =
+        continueFromClosed ||
+        String(cur.status || "") === "paused" ||
+        String(cur.status || "") === "running" ||
+        ((cur.messages || []).length > 0);
+      const occupancyA = resolveAgentOccupancy(cur.agentA, null, null, {
+        excludeGroupSessionId: sessionId,
+        treatExternalAsAssignable: allowExternalResume
+      });
+      const occupancyB = resolveAgentOccupancy(cur.agentB, null, null, {
+        excludeGroupSessionId: sessionId,
+        treatExternalAsAssignable: allowExternalResume
+      });
       if (!occupancyA.assignable || !occupancyB.assignable) {
         const e = new Error(
           `Selected agents are unavailable: ${[
