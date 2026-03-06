@@ -1,0 +1,16 @@
+{
+  "name": "manager-claw",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local agent document center",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "sync:protocol": "node scripts/sync-manager-claw-protocol.js",
+    "migrate:artifacts": "node scripts/migrate-artifacts-layout.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "marked": "^12.0.2"
+  }
+}

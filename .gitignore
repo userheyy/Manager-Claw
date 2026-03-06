@@ -1,0 +1,16 @@
+node_modules/
+.DS_Store
+Thumbs.db
+.env
+.env.local
+.env.docker.example
+.dockerignore
+Dockerfile
+docker-compose.yml
+data/
+*.log
+.local-port
+.local-server.pid
+.tmp-server-err.log
+.tmp-server-out.log
+tmp-server.log

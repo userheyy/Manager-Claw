@@ -1,0 +1,316 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Manager Claw</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;700;900&family=Sora:wght@400;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css?v=20260306i" />
+  </head>
+  <body>
+    <div class="bg-grid"></div>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="topbar-head">
+          <div class="topbar-copy">
+            <h1>🦞 Agent 协作控制台</h1>
+            <p id="rootInfo">读取中...</p>
+          </div>
+          <button id="openDispatchSettings" class="gear-btn" type="button" aria-label="打开调度设置" title="调度设置">
+            <span class="gear-btn-icon" aria-hidden="true">⚙</span>
+            <span class="gear-btn-text">调度设置</span>
+          </button>
+        </div>
+        <div class="top-nav">
+          <button id="navTasks" class="nav-btn active" type="button">任务中心</button>
+          <button id="navGroups" class="nav-btn" type="button">讨论组</button>
+          <button id="navAgents" class="nav-btn" type="button">Agent 中心</button>
+        </div>
+      </header>
+
+      <main class="main-layout">
+        <section id="tasksView" class="task-center">
+          <div class="section-title-row">
+            <h2>任务中心</h2>
+            <div id="taskStats" class="task-stats"></div>
+          </div>
+
+          <div class="task-compose-grid">
+            <form id="taskDecomposeForm" class="panel decompose-panel">
+              <h3>主虾拆解</h3>
+              <textarea id="goalInput" rows="4" placeholder="输入你的目标，例如：完成任务认领系统并接入 PR 审核流" required></textarea>
+              <div class="picker-block">
+                <div class="picker-head">
+                  <strong>选择主虾</strong>
+                  <span>直接显示忙闲状态与占用原因</span>
+                </div>
+                <div id="masterAgentPicker" class="agent-picker-grid"></div>
+                <select id="masterAgentSelect" class="visually-hidden"></select>
+              </div>
+              <div class="inline-row end">
+                <button type="submit" class="primary-btn">拆解并入池</button>
+              </div>
+              <p class="tip">拆解会调用选中主控 Agent，按结构化 JSON 生成子任务。</p>
+            </form>
+          </div>
+
+          <div class="panel board-panel">
+            <div class="board-toolbar">
+              <button id="refreshTasksBtn" class="ghost-btn">刷新</button>
+              <div class="inline-row">
+                <select id="autoClaimAgentSelect"></select>
+                <button id="autoClaimBtn" class="ghost-btn" type="button">自动认领并执行</button>
+                <button id="heartbeatTickBtn" class="ghost-btn" type="button">心跳认领并执行</button>
+              </div>
+            </div>
+            <div class="task-filter-row">
+              <input id="taskSearchInput" type="text" placeholder="搜索里程碑标题 / ID / 项目名" />
+              <select id="taskProjectFilter">
+                <option value="all">全部项目</option>
+              </select>
+              <select id="taskStatusFilter">
+                <option value="all">全部状态</option>
+                <option value="todo">待认领</option>
+                <option value="claimed">已认领</option>
+                <option value="in_progress">进行中</option>
+                <option value="review">待评审</option>
+                <option value="blocked">阻塞</option>
+                <option value="done">已完成</option>
+              </select>
+              <select id="taskSortSelect">
+                <option value="updated_desc">最近更新</option>
+                <option value="progress_desc">进度最高</option>
+                <option value="progress_asc">进度最低</option>
+                <option value="title_asc">标题 A-Z</option>
+              </select>
+              <button id="taskFilterResetBtn" class="ghost-btn" type="button">重置筛选</button>
+            </div>
+            <div id="taskBoard" class="task-board"></div>
+          </div>
+
+          <section id="taskDetailPage" class="panel task-page" style="display: none">
+            <div class="task-page-head">
+              <button id="taskDetailBack" class="ghost-btn" type="button">返回任务中心</button>
+              <h3 id="taskDetailTitle">任务详情</h3>
+            </div>
+            <div id="taskDetailMeta" class="task-detail-meta"></div>
+            <div id="taskDetailProgress" class="task-progress-wrap"></div>
+            <div id="taskDetailDesc" class="task-detail-desc"></div>
+            <div id="taskDetailSummary" class="task-detail-summary"></div>
+            <div id="taskDetailChecklist" class="task-detail-checklist"></div>
+            <div id="taskDetailChildren" class="task-detail-children"></div>
+            <div id="taskDetailContext" class="task-detail-children"></div>
+            <div id="taskDetailEvents" class="task-detail-children"></div>
+            <div class="task-detail-controls">
+              <select id="taskDetailAgentSelect"></select>
+              <select id="taskDispatchModeSelect">
+                <option value="sessions_send">sessions_send</option>
+                <option value="sessions_spawn">sessions_spawn</option>
+              </select>
+              <button id="taskBtnClaim" class="mini-btn" type="button">认领</button>
+              <button id="taskBtnStart" class="mini-btn" type="button">开始</button>
+              <button id="taskBtnReview" class="mini-btn" type="button">提审</button>
+              <button id="taskBtnIntegrated" class="mini-btn" type="button">主虾整合产出</button>
+              <button id="taskBtnDone" class="mini-btn" type="button">完成</button>
+              <button id="taskBtnBlock" class="mini-btn danger" type="button">阻塞</button>
+              <button id="taskBtnRelease" class="mini-btn danger" type="button">释放认领</button>
+              <button id="taskBtnDispatch" class="mini-btn" type="button">派发执行</button>
+              <button id="taskBtnDelete" class="mini-btn danger" type="button">删除任务</button>
+            </div>
+          </section>
+        </section>
+
+        <section id="groupsView" style="display: none">
+          <div class="section-title-row">
+            <h2>AB 无领导讨论组</h2>
+          </div>
+          <div class="group-layout">
+            <form id="groupCreateForm" class="panel">
+              <h3>创建双人讨论</h3>
+              <input id="groupTitleInput" type="text" placeholder="讨论标题（可选）" />
+              <textarea id="groupGoalInput" rows="4" placeholder="讨论目标，例如：比较两套部署策略并给出最终建议" required></textarea>
+              <div class="picker-stack">
+                <div class="picker-block">
+                  <div class="picker-head">
+                    <strong>A 角色</strong>
+                    <span>先发言的一方</span>
+                  </div>
+                  <div id="groupAgentAPicker" class="agent-picker-grid compact"></div>
+                  <select id="groupAgentASelect" class="visually-hidden"></select>
+                </div>
+                <div class="picker-block">
+                  <div class="picker-head">
+                    <strong>B 角色</strong>
+                    <span>与 A 串行轮流讨论</span>
+                  </div>
+                  <div id="groupAgentBPicker" class="agent-picker-grid compact"></div>
+                  <select id="groupAgentBSelect" class="visually-hidden"></select>
+                </div>
+                <div class="picker-block">
+                  <div class="picker-head">
+                    <strong>主控整合</strong>
+                    <span>讨论结束后谁来做收官报告</span>
+                  </div>
+                  <div id="groupMasterAgentPicker" class="agent-picker-grid compact"></div>
+                  <select id="groupMasterAgentSelect" class="visually-hidden"></select>
+                </div>
+              </div>
+              <div class="inline-row">
+                <input id="groupMaxRoundsInput" type="number" min="1" max="20" value="6" />
+                <label class="checkline"><input id="groupAutoRunInput" type="checkbox" checked /> 自动轮询推进</label>
+              </div>
+              <button class="primary-btn" type="submit">创建讨论</button>
+              <p class="tip">仅支持 A/B 两位 Agent，串行轮次对话，达到验收条件自动结束。</p>
+            </form>
+            <section class="panel">
+              <div class="board-toolbar">
+                <h3 style="margin: 0">讨论会话</h3>
+                <button id="refreshGroupsBtn" class="ghost-btn" type="button">刷新</button>
+              </div>
+              <div id="groupSessionList" class="group-session-list"></div>
+            </section>
+          </div>
+
+          <section id="groupDetailPanel" class="panel" style="margin-top: 12px; display: none">
+            <div class="board-toolbar">
+              <h3 id="groupDetailTitle" style="margin: 0">讨论详情</h3>
+              <div class="inline-row">
+                <button id="groupStartBtn" class="mini-btn" type="button">开始</button>
+                <button id="groupPauseBtn" class="mini-btn" type="button">暂停</button>
+                <button id="groupTickBtn" class="mini-btn" type="button">推进一轮</button>
+                <button id="groupAbortBtn" class="mini-btn danger" type="button">中止</button>
+                <button id="groupDeleteBtn" class="mini-btn danger" type="button">删除</button>
+              </div>
+            </div>
+            <div id="groupDetailMeta" class="task-detail-meta"></div>
+            <div id="groupDetailSummary" class="task-detail-summary"></div>
+            <div id="groupDetailReport" class="task-detail-children" style="margin-top: 10px"></div>
+            <div class="task-detail-controls">
+              <input id="groupExportFileName" type="text" placeholder="导出文件名（可选）" />
+              <button id="groupExportBtn" class="mini-btn" type="button">导出 Markdown</button>
+            </div>
+            <div id="groupMessages" class="chat-messages" style="margin-top: 10px; min-height: 340px"></div>
+          </section>
+        </section>
+
+        <section id="agentsView" style="display: none">
+          <div class="section-title-row">
+            <h2>Agent 列表</h2>
+          </div>
+          <section class="agent-grid" id="agentGrid"></section>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="docDialog" class="doc-dialog">
+      <div class="dialog-tabs">
+        <div class="tab-left">
+          <button id="tabDocs" class="tab-btn active">文档</button>
+          <button id="tabChat" class="tab-btn">聊天</button>
+        </div>
+        <button id="closeDialogTop" class="ghost-btn">关闭</button>
+      </div>
+
+      <section id="docsPanel">
+        <div class="doc-layout">
+          <aside class="doc-list">
+            <div class="doc-list-title">
+              <span>📁 文件列表</span>
+              <span id="docCount">0</span>
+            </div>
+            <div id="fileList"></div>
+          </aside>
+          <section class="doc-content">
+            <div class="doc-content-title">
+              <span id="activeFile">请选择文件</span>
+              <div class="actions">
+                <button id="editBtn" class="ghost-btn">编辑</button>
+                <button id="saveBtn" class="ghost-btn" style="display: none">保存</button>
+                <button id="cancelEditBtn" class="ghost-btn" style="display: none">取消</button>
+                <button id="closeDialog" class="ghost-btn">关闭</button>
+              </div>
+            </div>
+            <article id="markdownBody" class="markdown-body"></article>
+            <textarea id="markdownEditor" class="markdown-editor" style="display: none"></textarea>
+          </section>
+        </div>
+      </section>
+
+      <section id="chatPanel" class="chat-panel" style="display: none">
+        <div class="chat-head">
+          <div>
+            <strong id="chatAgentName">未选择角色</strong>
+            <div id="chatAgentMeta" class="chat-meta"></div>
+          </div>
+        </div>
+        <div id="chatMessages" class="chat-messages"></div>
+        <div class="chat-input-row">
+          <textarea id="chatInput" placeholder="给这个角色发消息..." rows="3"></textarea>
+          <button id="chatSendBtn" class="primary-btn">发送</button>
+        </div>
+      </section>
+    </dialog>
+
+    <dialog id="dispatchSettingsDialog" class="doc-dialog">
+      <div class="dialog-tabs">
+        <div class="tab-left">
+          <button class="tab-btn active">调度设置</button>
+        </div>
+        <button id="closeDispatchSettings" class="ghost-btn">关闭</button>
+      </div>
+      <section class="panel" style="margin: 14px">
+        <div class="settings-head">
+          <div>
+            <h3>任务调度模式</h3>
+            <p class="tip">
+              这里决定“谁来主动派任务”。如果你不确定，默认用 `central（中心调度）`。
+            </p>
+          </div>
+          <div class="settings-badge">推荐新手使用 central</div>
+        </div>
+
+        <div class="settings-grid">
+          <label class="settings-field">
+            <span class="settings-label">调度模式</span>
+            <select id="dispatchModeSelect">
+              <option value="central">central（中心调度）</option>
+              <option value="agent_pull">agent_pull（子 Agent 自己拉任务）</option>
+            </select>
+            <span id="dispatchModeHint" class="settings-help"></span>
+          </label>
+
+          <label class="settings-field">
+            <span class="settings-label">中心调度间隔（毫秒）</span>
+            <input id="dispatchIntervalInput" type="number" min="30000" step="1000" placeholder="例如 60000" />
+            <span class="settings-help">
+              只在 `central` 模式生效。表示中控每隔多久扫描一次空闲 Agent 并尝试派任务。推荐值：`60000`。
+            </span>
+          </label>
+        </div>
+
+        <div class="inline-row settings-inline">
+          <label class="settings-field" style="flex: 1">
+            <span class="settings-label">排除的 Agent</span>
+            <input id="dispatchExcludeInput" type="text" placeholder="例如：s1__workspace,s1__workspace-codex" />
+            <span class="settings-help">
+              这些 Agent 不会被中控自动派任务。适合保留一个“主控虾”只负责拆解/整合，不参与自动执行。
+            </span>
+          </label>
+          <button id="saveDispatchSettings" class="primary-btn" type="button">保存</button>
+        </div>
+        <div class="settings-note">
+          <strong>怎么选：</strong>
+          `central` 适合你现在这套管理台；`agent_pull` 只适合子 Agent 已经稳定配置心跳、会自己定期拉任务的场景。
+        </div>
+        <p id="dispatchSettingsMeta" class="tip"></p>
+      </section>
+    </dialog>
+
+    <script src="./main.js?v=20260306g" type="module"></script>
+  </body>
+</html>
