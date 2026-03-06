@@ -13,6 +13,12 @@ const dispatchExcludeInput = document.getElementById("dispatchExcludeInput");
 const saveDispatchSettings = document.getElementById("saveDispatchSettings");
 const dispatchSettingsMeta = document.getElementById("dispatchSettingsMeta");
 const dispatchModeHint = document.getElementById("dispatchModeHint");
+const topbarModeValue = document.getElementById("topbarModeValue");
+const topbarModeSub = document.getElementById("topbarModeSub");
+const runtimeActiveTasks = document.getElementById("runtimeActiveTasks");
+const runtimeActiveGroups = document.getElementById("runtimeActiveGroups");
+const runtimeDispatchMode = document.getElementById("runtimeDispatchMode");
+const runtimeLastError = document.getElementById("runtimeLastError");
 
 const agentGrid = document.getElementById("agentGrid");
 const rootInfo = document.getElementById("rootInfo");
@@ -30,8 +36,10 @@ const taskProjectFilter = document.getElementById("taskProjectFilter");
 const taskStatusFilter = document.getElementById("taskStatusFilter");
 const taskSortSelect = document.getElementById("taskSortSelect");
 const taskFilterResetBtn = document.getElementById("taskFilterResetBtn");
+const taskFocusShell = document.querySelector(".task-focus-shell");
 
 const taskDetailPage = document.getElementById("taskDetailPage");
+const taskDetailBackdrop = document.getElementById("taskDetailBackdrop");
 const taskDetailBack = document.getElementById("taskDetailBack");
 const taskDetailTitle = document.getElementById("taskDetailTitle");
 const taskDetailMeta = document.getElementById("taskDetailMeta");
@@ -64,6 +72,7 @@ const groupMaxRoundsInput = document.getElementById("groupMaxRoundsInput");
 const groupAutoRunInput = document.getElementById("groupAutoRunInput");
 const refreshGroupsBtn = document.getElementById("refreshGroupsBtn");
 const groupSessionList = document.getElementById("groupSessionList");
+const groupFocusShell = document.querySelector(".group-focus-shell");
 const groupDetailDialog = document.getElementById("groupDetailDialog");
 const groupDetailCloseBtn = document.getElementById("groupDetailCloseBtn");
 const groupDetailTitle = document.getElementById("groupDetailTitle");
@@ -100,12 +109,10 @@ const chatInput = document.getElementById("chatInput");
 const chatSendBtn = document.getElementById("chatSendBtn");
 
 const STATUS_LABEL = {
-  todo: "待认领",
-  claimed: "已认领",
-  in_progress: "进行中",
-  review: "待评审",
+  todo: "待释放",
+  ready: "待派发",
+  executing: "执行中",
   integrated: "已集成",
-  accepted: "已验收",
   done: "已完成",
   blocked: "阻塞"
 };
@@ -126,6 +133,7 @@ let currentTaskId = null;
 let currentMilestoneId = null;
 let milestoneDetail = null;
 let dispatchSettings = null;
+let runtimeMeta = null;
 let currentGroupSessionId = null;
 let currentGroupDetail = null;
 let groupDetailDismissedSessionId = null;
@@ -145,6 +153,12 @@ const taskFilter = {
   status: "all",
   sort: "updated_desc"
 };
+
+function setFocusFlow(shell, step) {
+  if (!shell) return;
+  shell.classList.remove("focus-compose", "focus-board", "focus-sessions");
+  shell.classList.add(`focus-${step}`);
+}
 const LIVE_REFRESH_MS = {
   tasks: 5000,
   groups: 3000,
@@ -194,9 +208,14 @@ async function requestJson(url, options) {
   const res = await fetch(url, options);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    const message =
+      (typeof data.error === "string" ? data.error : data?.error?.message) ||
+      (typeof data.message === "string" ? data.message : "") ||
+      `HTTP ${res.status}`;
     const detail = data.replyText ? ` | ${String(data.replyText).slice(0, 240)}` : "";
-    const err = new Error((data.error || `HTTP ${res.status}`) + detail);
+    const err = new Error(message + detail);
     err.status = res.status;
+    err.payload = data;
     throw err;
   }
   return data;
@@ -213,6 +232,8 @@ function setView(view) {
   tasksView.style.display = isTasks ? "block" : "none";
   if (groupsView) groupsView.style.display = isGroups ? "block" : "none";
   agentsView.style.display = isAgents ? "block" : "none";
+  if (isTasks) setFocusFlow(taskFocusShell, currentMilestoneId ? "board" : "compose");
+  if (isGroups) setFocusFlow(groupFocusShell, currentGroupSessionId ? "sessions" : "compose");
   scheduleLiveRefresh(true);
 }
 
@@ -228,6 +249,7 @@ async function runLiveRefresh() {
   }
   liveRefreshInFlight = true;
   try {
+    await refreshRuntime();
     if (currentView === "groups") {
       await refreshGroupSessions();
     } else if (currentView === "agents") {
@@ -285,7 +307,7 @@ function mapAgentStatus(status) {
   const s = String(status || "").toLowerCase();
   if (s === "heartbeat_only" || s === "heartbeat") return "heartbeat_only";
   if (s === "busy_external" || s === "external" || s === "unknown") return "busy_external";
-  if (s === "busy" || s === "active" || s === "in_progress") return "busy";
+  if (s === "busy_task" || s === "busy_discussion" || s === "busy" || s === "active" || s === "in_progress") return "busy";
   if (s === "offline") return "offline";
   return "idle";
 }
@@ -372,7 +394,8 @@ function renderAgentPicker(container, targetSelect, options = {}) {
     emptyDesc = "留空",
     filter = () => true,
     isDisabled = () => false,
-    searchQuery = ""
+    searchQuery = "",
+    scope = "generic"
   } = options;
   const current = String(targetSelect.value || "");
   const query = normalizeForSearch(searchQuery);
@@ -424,14 +447,21 @@ function renderAgentPicker(container, targetSelect, options = {}) {
       const selected = current === String(agent.id || "");
       const disabled = !agent.selectable;
       const statusClass = mapAgentStatus(agent.status);
+      const pickerEmoji =
+        String(agent.id || "") === ""
+          ? "🧭"
+          : agent.avatarType === "emoji" && String(agent.avatar || "").trim()
+            ? String(agent.avatar).trim()
+            : "🦞";
       return `
         <button
           type="button"
-          class="agent-pick-card status-${statusClass}${selected ? " selected" : ""}${disabled ? " disabled" : ""}"
+          class="agent-pick-card scope-${scope} status-${statusClass}${selected ? " selected" : ""}${disabled ? " disabled" : ""}"
           data-picker-value="${escapeHtml(String(agent.id || ""))}"
           ${disabled ? 'aria-disabled="true"' : ""}
         >
           <div class="agent-pick-top">
+            <span class="agent-pick-emoji" aria-hidden="true">${escapeHtml(pickerEmoji)}</span>
             <strong>${escapeHtml(agent.name || emptyLabel)}</strong>
             <span class="runtime-pill ${statusClass}">${escapeHtml(agent.statusLabel || "")}</span>
           </div>
@@ -467,18 +497,21 @@ function renderAgentPickers() {
   }
   renderAgentPicker(masterAgentPicker, masterAgentSelect, {
     filter: () => true,
-    isDisabled: (agent) => !["idle", "heartbeat_only"].includes(String(agent.status || "").toLowerCase()),
-    searchQuery: pickerSearchState.masterAgentSelect
+    isDisabled: (agent) => !Boolean(agent.assignable),
+    searchQuery: pickerSearchState.masterAgentSelect,
+    scope: "task"
   });
   renderAgentPicker(groupAgentAPicker, groupAgentASelect, {
     filter: () => true,
-    isDisabled: (agent) => !["idle", "heartbeat_only"].includes(String(agent.status || "").toLowerCase()),
-    searchQuery: pickerSearchState.groupAgentASelect
+    isDisabled: (agent) => !Boolean(agent.assignable),
+    searchQuery: pickerSearchState.groupAgentASelect,
+    scope: "group-a"
   });
   renderAgentPicker(groupAgentBPicker, groupAgentBSelect, {
     filter: (agent) => String(agent.id || "") !== String(groupAgentASelect?.value || ""),
-    isDisabled: (agent) => !["idle", "heartbeat_only"].includes(String(agent.status || "").toLowerCase()),
-    searchQuery: pickerSearchState.groupAgentBSelect
+    isDisabled: (agent) => !Boolean(agent.assignable),
+    searchQuery: pickerSearchState.groupAgentBSelect,
+    scope: "group-b"
   });
   renderAgentPicker(groupMasterAgentPicker, groupMasterAgentSelect, {
     allowEmpty: true,
@@ -486,7 +519,8 @@ function renderAgentPickers() {
     emptyDesc: "讨论结束后不自动整合",
     filter: () => true,
     isDisabled: () => false,
-    searchQuery: pickerSearchState.groupMasterAgentSelect
+    searchQuery: pickerSearchState.groupMasterAgentSelect,
+    scope: "group-master"
   });
 }
 
@@ -502,12 +536,19 @@ function renderTaskStats() {
   const top = tasks.filter((t) => !t.parentTaskId);
   const visible = getFilteredMilestones();
   const html = [
-    `<span class="stat-pill">大任务 ${top.length}</span>`,
-    `<span class="stat-pill">当前显示 ${visible.length}</span>`,
-    `<span class="stat-pill">子任务 ${tasks.filter((t) => t.parentTaskId).length}</span>`,
-    `<span class="stat-pill">进行中 ${tasks.filter((t) => t.status === "in_progress").length}</span>`,
-    `<span class="stat-pill">已完成 ${tasks.filter((t) => t.status === "done").length}</span>`
-  ];
+    { label: "大任务", value: top.length },
+    { label: "当前显示", value: visible.length },
+    { label: "子任务", value: tasks.filter((t) => t.parentTaskId).length },
+    { label: "执行中", value: tasks.filter((t) => t.status === "executing").length },
+    { label: "已整合", value: tasks.filter((t) => t.status === "integrated").length }
+  ].map(
+    (item) => `
+      <span class="stat-pill">
+        <strong>${item.value}</strong>
+        <small>${item.label}</small>
+      </span>
+    `
+  );
   taskStats.innerHTML = html.join("");
 }
 
@@ -556,6 +597,22 @@ function getFilteredMilestones() {
 
 function renderTaskBoard() {
   const list = getFilteredMilestones();
+  const priorityRank = {
+    executing: 0,
+    blocked: 1,
+    ready: 2,
+    todo: 3,
+    done: 4,
+    integrated: 5
+  };
+  const primaryMilestoneId = list
+    .slice()
+    .sort((a, b) => {
+      const pa = priorityRank[String(a.status || "")] ?? 9;
+      const pb = priorityRank[String(b.status || "")] ?? 9;
+      if (pa !== pb) return pa - pb;
+      return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+    })[0]?.id;
   const cards = list
     .map((m) => {
       const done = Number(m.childrenDone || 0);
@@ -564,8 +621,9 @@ function renderTaskBoard() {
       const blocked = Number(m.childrenBlocked || 0);
       const inProgress = Number(m.childrenInProgress || 0);
       const statusLabel = STATUS_LABEL[m.status] || m.status;
+      const visualClass = primaryMilestoneId === m.id ? "primary" : "secondary";
       return `
-        <article class="milestone-card" data-milestone-open="${m.id}">
+        <article class="milestone-card ${visualClass}" data-milestone-open="${m.id}">
           <div class="milestone-head">
             <strong>${escapeHtml(m.title)}</strong>
             <span>${statusLabel}</span>
@@ -646,6 +704,7 @@ function renderGroupDetail(session, options = {}) {
   const { openDialog = true } = options;
   currentGroupDetail = session;
   currentGroupSessionId = session.id;
+  setFocusFlow(groupFocusShell, "sessions");
   if (openDialog && groupDetailDialog && !groupDetailDialog.open) groupDetailDialog.showModal();
   const status = String(session.status || "");
   const isRunning = status === "running";
@@ -860,7 +919,7 @@ async function openMilestonePage(milestoneId, options = {}) {
   taskDetailSummary.textContent = m.summary ? `里程碑结论：${m.summary}` : "暂无里程碑结论";
 
   taskDetailChecklist.innerHTML =
-    '<div class="detail-title">里程碑整合</div><div class="task-meta">子任务全部完成后，点击“主虾整合产出”，由主控Agent汇总最终结果并回写里程碑。</div>';
+    '<div class="detail-title">里程碑整合</div><div class="task-meta">子任务全部完成后，系统会自动触发主控 Agent 收尾整合，并将最终结果回写到该里程碑。</div>';
 
   taskDetailChildren.innerHTML = `<div class="detail-title">子任务 (${data.progress.done}/${data.progress.total})</div>${
     data.children?.length
@@ -929,6 +988,8 @@ async function openMilestonePage(milestoneId, options = {}) {
   }`;
 
   taskDetailPage.style.display = "block";
+  if (taskDetailBackdrop) taskDetailBackdrop.style.display = "block";
+  setFocusFlow(taskFocusShell, "board");
   setTaskDetailTab(currentTaskDetailTab);
   if (scrollIntoView) {
     taskDetailPage.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1142,16 +1203,12 @@ async function decomposeGoal(e) {
 
 function renderDispatchModeHint() {
   if (!dispatchModeHint) return;
-  const mode = dispatchModeSelect?.value === "agent_pull" ? "agent_pull" : "central";
-  dispatchModeHint.textContent =
-    mode === "central"
-      ? "推荐模式。由管理台统一扫描空闲 Agent 并主动派任务，最适合现在这套控制台。"
-      : "高级模式。要求每个子 Agent 自己稳定心跳拉任务；如果 Agent 侧配置不完整，任务更容易卡住。";
+  dispatchModeHint.textContent = "推荐模式。由管理台统一扫描空闲 Agent 并主动派任务，最适合现在这套控制台。";
 }
 
 function renderDispatchSettingsMeta(data = dispatchSettings) {
   if (!dispatchSettingsMeta || !data) return;
-  const mode = data.dispatchMode === "agent_pull" ? "agent_pull" : "central";
+  const mode = "central";
   const interval = Number(data.centralDispatchIntervalMs || 60000);
   const excludes = Array.isArray(data.centralDispatchExclude) ? data.centralDispatchExclude.filter(Boolean) : [];
   const modeText =
@@ -1165,7 +1222,7 @@ function renderDispatchSettingsMeta(data = dispatchSettings) {
 async function loadDispatchSettings() {
   const data = await requestJson("/api/settings/dispatch");
   dispatchSettings = data;
-  if (dispatchModeSelect) dispatchModeSelect.value = data.dispatchMode || "central";
+  if (dispatchModeSelect) dispatchModeSelect.value = "central（中心调度）";
   if (dispatchIntervalInput) dispatchIntervalInput.value = Number(data.centralDispatchIntervalMs || 60000);
   if (dispatchExcludeInput) {
     dispatchExcludeInput.value = Array.isArray(data.centralDispatchExclude) ? data.centralDispatchExclude.join(",") : "";
@@ -1176,7 +1233,7 @@ async function loadDispatchSettings() {
 
 async function saveDispatchSettingsToServer() {
   const payload = {
-    dispatchMode: dispatchModeSelect?.value === "agent_pull" ? "agent_pull" : "central",
+    dispatchMode: "central",
     centralDispatchIntervalMs: Math.max(30000, Number(dispatchIntervalInput?.value) || 60000),
     centralDispatchExclude: String(dispatchExcludeInput?.value || "")
       .split(/[;,]/)
@@ -1201,7 +1258,31 @@ async function refreshAgents() {
   renderAgents();
 }
 
+function renderRuntimeMeta(meta = runtimeMeta) {
+  if (!meta) return;
+  const runtime = meta.runtime || meta;
+  if (runtimeActiveTasks) runtimeActiveTasks.textContent = String(runtime.activeTaskCount ?? 0);
+  if (runtimeActiveGroups) runtimeActiveGroups.textContent = String(runtime.activeDiscussionCount ?? 0);
+  if (runtimeDispatchMode) runtimeDispatchMode.textContent = String(runtime.dispatchMode || "central");
+  if (runtimeLastError) runtimeLastError.textContent = runtime.lastDispatchError ? "有" : "无";
+  if (topbarModeValue) {
+    topbarModeValue.textContent = `本机 .openclaw / ${runtime.dispatchMode === "agent_pull" ? "子 Agent 拉取" : "中心调度"}`;
+  }
+  if (topbarModeSub) {
+    topbarModeSub.textContent = runtime.lastDispatchError
+      ? `最近错误：${String(runtime.lastDispatchError).slice(0, 80)}`
+      : `活跃任务 ${runtime.activeTaskCount ?? 0} · 活跃讨论 ${runtime.activeDiscussionCount ?? 0}`;
+  }
+}
+
+async function refreshRuntime() {
+  const data = await requestJson("/health");
+  runtimeMeta = data;
+  renderRuntimeMeta(data);
+}
+
 async function refreshAll() {
+  await refreshRuntime();
   await refreshAgents();
   await refreshTasks();
   await refreshGroupSessions();
@@ -1209,8 +1290,10 @@ async function refreshAll() {
 
 function showTaskDashboard() {
   taskDetailPage.style.display = "none";
+  if (taskDetailBackdrop) taskDetailBackdrop.style.display = "none";
   currentMilestoneId = null;
   currentTaskId = null;
+  setFocusFlow(taskFocusShell, "compose");
   history.replaceState(null, "", "#tasks");
 }
 
@@ -1283,6 +1366,11 @@ dialog.addEventListener("click", (e) => {
 
 taskDecomposeForm.addEventListener("submit", decomposeGoal);
 refreshTasksBtn.addEventListener("click", refreshTasks);
+taskDecomposeForm?.addEventListener("focusin", () => setFocusFlow(taskFocusShell, "compose"));
+taskSearchInput?.addEventListener("focus", () => setFocusFlow(taskFocusShell, "board"));
+taskProjectFilter?.addEventListener("focus", () => setFocusFlow(taskFocusShell, "board"));
+taskStatusFilter?.addEventListener("focus", () => setFocusFlow(taskFocusShell, "board"));
+taskSortSelect?.addEventListener("focus", () => setFocusFlow(taskFocusShell, "board"));
 taskSearchInput?.addEventListener("input", () => {
   renderTaskStats();
   renderTaskBoard();
@@ -1316,6 +1404,7 @@ taskBoard.addEventListener("click", (e) => {
 });
 
 taskDetailBack.addEventListener("click", showTaskDashboard);
+taskDetailBackdrop?.addEventListener("click", showTaskDashboard);
 taskDetailTabSummary?.addEventListener("click", () => setTaskDetailTab("summary"));
 taskDetailTabChildren?.addEventListener("click", () => setTaskDetailTab("children"));
 taskDetailTabContext?.addEventListener("click", () => setTaskDetailTab("context"));
@@ -1327,6 +1416,7 @@ groupCreateForm?.addEventListener("submit", async (e) => {
     alert(`创建讨论失败: ${err.message}`);
   }
 });
+groupCreateForm?.addEventListener("focusin", () => setFocusFlow(groupFocusShell, "compose"));
 refreshGroupsBtn?.addEventListener("click", () => refreshGroupSessions().catch((err) => alert(`刷新讨论失败: ${err.message}`)));
 groupSessionList?.addEventListener("click", async (e) => {
   const card = e.target.closest("[data-group-open]");
@@ -1342,16 +1432,19 @@ groupSessionList?.addEventListener("click", async (e) => {
 });
 groupDetailCloseBtn?.addEventListener("click", () => {
   groupDetailDismissedSessionId = currentGroupSessionId;
+  setFocusFlow(groupFocusShell, "compose");
   if (groupDetailDialog?.open) groupDetailDialog.close();
 });
 groupDetailDialog?.addEventListener("cancel", (e) => {
   e.preventDefault();
   groupDetailDismissedSessionId = currentGroupSessionId;
+  setFocusFlow(groupFocusShell, "compose");
   groupDetailDialog.close();
 });
 groupDetailDialog?.addEventListener("click", (e) => {
   if (e.target === groupDetailDialog) {
     groupDetailDismissedSessionId = currentGroupSessionId;
+    setFocusFlow(groupFocusShell, "compose");
     groupDetailDialog.close();
   }
 });

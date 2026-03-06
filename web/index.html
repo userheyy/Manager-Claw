@@ -7,90 +7,145 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;700;900&family=Sora:wght@400;600;700;800&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;600;700;800&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=20260306p" />
+    <link rel="stylesheet" href="./styles.css?v=20260306s" />
   </head>
   <body>
     <div class="bg-grid"></div>
+    <div class="bg-orb bg-orb-a"></div>
+    <div class="bg-orb bg-orb-b"></div>
     <div class="app-shell">
       <header class="topbar">
         <div class="topbar-head">
-          <div class="topbar-copy">
-            <h1>🦞 Agent 协作控制台</h1>
-            <p id="rootInfo">读取中...</p>
+          <div class="topbar-brand">
+            <div class="topbar-mark">🦞</div>
+            <div class="topbar-copy">
+              <div class="topbar-eyebrow">Manager-Claw / Local Orchestration Console</div>
+              <h1>Agent 协作控制台</h1>
+              <p id="rootInfo">读取中...</p>
+            </div>
           </div>
-          <button id="openDispatchSettings" class="gear-btn" type="button" aria-label="打开调度设置" title="调度设置">
-            <span class="gear-btn-icon" aria-hidden="true">⚙</span>
-            <span class="gear-btn-text">调度设置</span>
-          </button>
+          <div class="topbar-side">
+            <div class="topbar-mode-card">
+              <div class="topbar-mode-label">当前模式</div>
+              <div id="topbarModeValue" class="topbar-mode-value">本机 .openclaw / 中心调度</div>
+              <div id="topbarModeSub" class="topbar-mode-sub">任务、讨论、Agent 三套视图共用同一套状态真相。</div>
+            </div>
+            <div class="runtime-panel">
+              <div class="runtime-head">运行状态</div>
+              <div class="runtime-grid">
+                <div class="runtime-item">
+                  <span>活跃任务</span>
+                  <strong id="runtimeActiveTasks">0</strong>
+                </div>
+                <div class="runtime-item">
+                  <span>活跃讨论</span>
+                  <strong id="runtimeActiveGroups">0</strong>
+                </div>
+                <div class="runtime-item">
+                  <span>调度模式</span>
+                  <strong id="runtimeDispatchMode">central</strong>
+                </div>
+                <div class="runtime-item">
+                  <span>最近错误</span>
+                  <strong id="runtimeLastError">无</strong>
+                </div>
+              </div>
+            </div>
+            <button id="openDispatchSettings" class="gear-btn" type="button" aria-label="打开调度设置" title="调度设置">
+              <span class="gear-btn-icon" aria-hidden="true">⚙</span>
+              <span class="gear-btn-text">调度设置</span>
+            </button>
+          </div>
         </div>
         <div class="top-nav">
           <button id="navTasks" class="nav-btn active" type="button">任务中心</button>
           <button id="navGroups" class="nav-btn" type="button">讨论组</button>
           <button id="navAgents" class="nav-btn" type="button">Agent 中心</button>
         </div>
+        <div class="topbar-ribbon">
+          <span>主题分配给主虾</span>
+          <span>系统按层级自动派发</span>
+          <span>AB 讨论沉淀为结论</span>
+          <span>主控统一做收官整合</span>
+        </div>
       </header>
 
       <main class="main-layout">
         <section id="tasksView" class="task-center">
           <div class="section-title-row">
-            <h2>任务中心</h2>
+            <div>
+              <div class="section-kicker">Mission Control</div>
+              <h2>任务中心</h2>
+            </div>
             <div id="taskStats" class="task-stats"></div>
           </div>
 
-          <div class="task-compose-grid">
-            <form id="taskDecomposeForm" class="panel decompose-panel">
-              <h3>主虾拆解</h3>
-              <textarea id="goalInput" rows="4" placeholder="输入你的目标，例如：完成任务认领系统并接入 PR 审核流" required></textarea>
-              <div class="picker-block">
-                <div class="picker-head">
-                  <strong>选择主虾</strong>
-                  <span>直接显示忙闲状态与占用原因</span>
+          <div class="section-lead">
+            先把主题交给主虾，再由系统按分级子任务自动流转。这里不是手工任务后台，而是项目推进工作台。
+          </div>
+
+          <div class="focus-flow-shell task-focus-shell focus-compose">
+            <div class="task-compose-grid workspace-grid">
+              <form id="taskDecomposeForm" class="panel decompose-panel" data-focus-step="compose">
+                <div class="panel-kicker">Step 01</div>
+                <h3>主虾拆解</h3>
+                <textarea id="goalInput" rows="4" placeholder="输入你的目标，例如：完成任务认领系统并接入 PR 审核流" required></textarea>
+                <div class="picker-block">
+                  <div class="picker-head">
+                    <strong>选择主虾</strong>
+                    <span>直接显示忙闲状态与占用原因</span>
+                  </div>
+                  <input id="masterAgentSearch" class="picker-search" type="text" placeholder="搜索主虾名称 / 角色 / 状态" />
+                  <div id="masterAgentPicker" class="agent-picker-grid"></div>
+                  <select id="masterAgentSelect" class="visually-hidden"></select>
                 </div>
-                <input id="masterAgentSearch" class="picker-search" type="text" placeholder="搜索主虾名称 / 角色 / 状态" />
-                <div id="masterAgentPicker" class="agent-picker-grid"></div>
-                <select id="masterAgentSelect" class="visually-hidden"></select>
+                <div class="inline-row end">
+                  <button type="submit" class="primary-btn">拆解并入池</button>
+                </div>
+                <p class="tip">拆解会调用选中主控 Agent，按结构化 JSON 生成子任务。</p>
+              </form>
+            </div>
+
+            <div class="panel board-panel" data-focus-step="board">
+              <div class="board-toolbar">
+                <div>
+                  <div class="panel-kicker">Step 02</div>
+                  <h3 style="margin: 4px 0 0">里程碑总览</h3>
+                </div>
+                <div class="task-mode-note">当前模式：主虾拆解 → 子任务自动流转 → 主虾整合</div>
+                <button id="refreshTasksBtn" class="ghost-btn">刷新</button>
               </div>
-              <div class="inline-row end">
-                <button type="submit" class="primary-btn">拆解并入池</button>
+              <div class="task-filter-row">
+                <input id="taskSearchInput" type="text" placeholder="搜索里程碑标题 / ID / 项目名" />
+                <select id="taskProjectFilter">
+                  <option value="all">全部项目</option>
+                </select>
+                <select id="taskStatusFilter">
+                  <option value="all">全部状态</option>
+                  <option value="todo">待释放</option>
+                  <option value="ready">待派发</option>
+                  <option value="executing">执行中</option>
+                  <option value="blocked">阻塞</option>
+                  <option value="done">已完成</option>
+                  <option value="integrated">已整合</option>
+                </select>
+                <select id="taskSortSelect">
+                  <option value="updated_desc">最近更新</option>
+                  <option value="progress_desc">进度最高</option>
+                  <option value="progress_asc">进度最低</option>
+                  <option value="title_asc">标题 A-Z</option>
+                </select>
+                <button id="taskFilterResetBtn" class="ghost-btn" type="button">重置筛选</button>
               </div>
-              <p class="tip">拆解会调用选中主控 Agent，按结构化 JSON 生成子任务。</p>
-            </form>
+              <div id="taskBoard" class="task-board"></div>
+            </div>
           </div>
 
-          <div class="panel board-panel">
-            <div class="board-toolbar">
-              <button id="refreshTasksBtn" class="ghost-btn">刷新</button>
-              <div class="task-mode-note">当前模式：主虾拆解 → 子任务自动流转 → 主虾整合</div>
-            </div>
-            <div class="task-filter-row">
-              <input id="taskSearchInput" type="text" placeholder="搜索里程碑标题 / ID / 项目名" />
-              <select id="taskProjectFilter">
-                <option value="all">全部项目</option>
-              </select>
-              <select id="taskStatusFilter">
-                <option value="all">全部状态</option>
-                <option value="todo">待认领</option>
-                <option value="claimed">已认领</option>
-                <option value="in_progress">进行中</option>
-                <option value="review">待评审</option>
-                <option value="blocked">阻塞</option>
-                <option value="done">已完成</option>
-              </select>
-              <select id="taskSortSelect">
-                <option value="updated_desc">最近更新</option>
-                <option value="progress_desc">进度最高</option>
-                <option value="progress_asc">进度最低</option>
-                <option value="title_asc">标题 A-Z</option>
-              </select>
-              <button id="taskFilterResetBtn" class="ghost-btn" type="button">重置筛选</button>
-            </div>
-            <div id="taskBoard" class="task-board"></div>
-          </div>
-
-          <section id="taskDetailPage" class="panel task-page" style="display: none">
+          <div id="taskDetailBackdrop" class="task-detail-backdrop" style="display: none"></div>
+          <section id="taskDetailPage" class="panel task-page task-drawer" style="display: none">
             <div class="task-page-head">
               <button id="taskDetailBack" class="ghost-btn" type="button">返回任务中心</button>
               <h3 id="taskDetailTitle">任务详情</h3>
@@ -119,10 +174,17 @@
 
         <section id="groupsView" style="display: none">
           <div class="section-title-row">
-            <h2>AB 无领导讨论组</h2>
+            <div>
+              <div class="section-kicker">Discussion Studio</div>
+              <h2>AB 无领导讨论组</h2>
+            </div>
           </div>
-          <div class="group-workspace">
-            <form id="groupCreateForm" class="panel group-create-rail">
+          <div class="section-lead">
+            当任务需要辩论、校准或形成方案时，用 AB 串行讨论收敛结论，再交由主控生成可落地报告。
+          </div>
+          <div class="group-workspace focus-flow-shell group-focus-shell focus-compose">
+            <form id="groupCreateForm" class="panel group-create-rail" data-focus-step="compose">
+              <div class="panel-kicker">Create Session</div>
               <h3>创建双人讨论</h3>
               <div class="group-create-grid">
                 <div class="group-create-copy">
@@ -183,9 +245,12 @@
                 </div>
               </div>
             </form>
-            <section class="panel group-session-rail-panel">
+            <section class="panel group-session-rail-panel" data-focus-step="sessions">
               <div class="board-toolbar">
-                <h3 style="margin: 0">讨论会话</h3>
+                <div>
+                  <div class="panel-kicker">Session Rail</div>
+                  <h3 style="margin: 4px 0 0">讨论会话</h3>
+                </div>
                 <button id="refreshGroupsBtn" class="ghost-btn" type="button">刷新</button>
               </div>
               <div id="groupSessionList" class="group-session-list rail"></div>
@@ -195,7 +260,13 @@
 
         <section id="agentsView" style="display: none">
           <div class="section-title-row">
-            <h2>Agent 列表</h2>
+            <div>
+              <div class="section-kicker">Fleet View</div>
+              <h2>Agent 列表</h2>
+            </div>
+          </div>
+          <div class="section-lead">
+            这里显示当前整支虾队的真实占用状态。优先关注繁忙、外部活跃和心跳巡检，而不是只看是否在线。
           </div>
           <section class="agent-grid" id="agentGrid"></section>
         </section>
@@ -270,14 +341,11 @@
         </div>
 
         <div class="settings-grid">
-          <label class="settings-field">
+          <div class="settings-field">
             <span class="settings-label">调度模式</span>
-            <select id="dispatchModeSelect">
-              <option value="central">central（中心调度）</option>
-              <option value="agent_pull">agent_pull（子 Agent 自己拉任务）</option>
-            </select>
-            <span id="dispatchModeHint" class="settings-help"></span>
-          </label>
+            <input id="dispatchModeSelect" type="text" value="central（中心调度）" readonly />
+            <span id="dispatchModeHint" class="settings-help">当前版本仅保留中心调度作为主路线，子 Agent 心跳拉取不再作为公开工作流。</span>
+          </div>
 
           <label class="settings-field">
             <span class="settings-label">中心调度间隔（毫秒）</span>
@@ -340,6 +408,6 @@
       </div>
     </dialog>
 
-    <script src="./main.js?v=20260306o" type="module"></script>
+    <script src="./main.js?v=20260306q" type="module"></script>
   </body>
 </html>

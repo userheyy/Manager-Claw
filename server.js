@@ -66,13 +66,18 @@ const groupExportsDir = path.join(dataDir, "discussion-exports");
 
 const TASK_STATUS = Object.freeze({
   TODO: "todo",
+  READY: "ready",
+  EXECUTING: "executing",
+  DONE: "done",
+  BLOCKED: "blocked",
+  INTEGRATED: "integrated"
+});
+
+const LEGACY_TASK_STATUS = Object.freeze({
   CLAIMED: "claimed",
   IN_PROGRESS: "in_progress",
   REVIEW: "review",
-  INTEGRATED: "integrated",
-  ACCEPTED: "accepted",
-  DONE: "done",
-  BLOCKED: "blocked"
+  ACCEPTED: "accepted"
 });
 
 const TASK_PRIORITY_RANK = { P0: 0, P1: 1, P2: 2, P3: 3 };
@@ -89,6 +94,13 @@ let heartbeatSchedulerStarted = false;
 let centralDispatchSchedulerStarted = false;
 let groupChatSchedulerStarted = false;
 let nextCentralDispatchAt = 0;
+const runtimeState = {
+  lastDispatchError: "",
+  lastDispatchErrorAt: null,
+  lastDispatchSource: "",
+  lastDispatchTarget: "",
+  lastDispatchOkAt: null
+};
 
 marked.setOptions({ breaks: true, gfm: true });
 app.use(express.static(path.join(__dirname, "web")));
@@ -103,6 +115,36 @@ ensureDataFiles();
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function sendError(res, status, message, extra = {}) {
+  return res.status(status).json({
+    ok: false,
+    error: {
+      code: status,
+      message: String(message || "Unknown error"),
+      ...extra
+    }
+  });
+}
+
+function sendOk(res, payload = {}) {
+  return res.json({ ok: true, ...payload });
+}
+
+function markRuntimeDispatchError(source, target, err) {
+  runtimeState.lastDispatchError = err instanceof Error ? err.message : String(err || "");
+  runtimeState.lastDispatchErrorAt = nowIso();
+  runtimeState.lastDispatchSource = String(source || "");
+  runtimeState.lastDispatchTarget = String(target || "");
+}
+
+function markRuntimeDispatchOk(source, target) {
+  runtimeState.lastDispatchOkAt = nowIso();
+  runtimeState.lastDispatchSource = String(source || "");
+  runtimeState.lastDispatchTarget = String(target || "");
+  runtimeState.lastDispatchError = "";
+  runtimeState.lastDispatchErrorAt = null;
 }
 
 function normalizeFsPath(p) {
@@ -592,6 +634,24 @@ function normalizeTaskRecord(task) {
         : (Number(task?.execLevel) || 1) <= 1
           ? TASK_RELEASE_STATE.PUBLISHED
           : TASK_RELEASE_STATE.STAGED;
+  const rawStatus = String(task?.status || "").trim().toLowerCase();
+  let status = TASK_STATUS.TODO;
+  if (rawStatus === TASK_STATUS.DONE || rawStatus === TASK_STATUS.BLOCKED || rawStatus === TASK_STATUS.INTEGRATED) {
+    status = rawStatus;
+  } else if (rawStatus === LEGACY_TASK_STATUS.ACCEPTED) {
+    status = TASK_STATUS.INTEGRATED;
+  } else if (
+    rawStatus === TASK_STATUS.EXECUTING ||
+    rawStatus === LEGACY_TASK_STATUS.CLAIMED ||
+    rawStatus === LEGACY_TASK_STATUS.IN_PROGRESS ||
+    rawStatus === LEGACY_TASK_STATUS.REVIEW
+  ) {
+    status = TASK_STATUS.EXECUTING;
+  } else if (rawStatus === TASK_STATUS.READY) {
+    status = TASK_STATUS.READY;
+  } else if (level !== 1 && releaseState === TASK_RELEASE_STATE.PUBLISHED) {
+    status = TASK_STATUS.READY;
+  }
   return {
     ...task,
     level,
@@ -599,12 +659,15 @@ function normalizeTaskRecord(task) {
     projectTitle,
     execLevel: Number.isFinite(Number(task?.execLevel)) ? Math.floor(Number(task.execLevel)) : null,
     parentTaskId,
+    rawStatus,
+    legacyStatus: rawStatus && rawStatus !== status ? rawStatus : "",
     claimedAt: task?.claimedAt ? String(task.claimedAt) : null,
     claimVersion: Number.isFinite(Number(task?.claimVersion)) ? Number(task.claimVersion) : 0,
     gateStatus: String(task?.gateStatus || "open"),
     acceptanceChecklist,
     releaseState,
-    next_input: String(task?.nextInput || "")
+    next_input: String(task?.nextInput || ""),
+    status
   };
 }
 
@@ -614,8 +677,8 @@ function isTaskPublished(task) {
 
 function isTaskClaimStale(task, nowMs = Date.now()) {
   if (!task) return false;
-  const status = String(task.status || "");
-  if (!["claimed", "in_progress"].includes(status)) return false;
+  const status = String(task.rawStatus || task.status || "");
+  if (![LEGACY_TASK_STATUS.CLAIMED, LEGACY_TASK_STATUS.IN_PROGRESS, TASK_STATUS.EXECUTING].includes(status)) return false;
   const stamp = String(task.claimedAt || task.updatedAt || "").trim();
   const ts = stamp ? Date.parse(stamp) : NaN;
   if (!Number.isFinite(ts)) return false;
@@ -654,14 +717,14 @@ function reclaimStaleClaims(store, milestoneId) {
 function pickClaimableTask(store, milestoneId, useRandom = true) {
   const normalized = store.tasks.map(normalizeTaskRecord);
   const claimable = normalized
-    .filter((t) => t.level !== 1 && t.status === TASK_STATUS.TODO)
+    .filter((t) => t.level !== 1 && t.status === TASK_STATUS.READY)
     .filter((t) => (milestoneId ? t.parentTaskId === milestoneId : true))
     .filter((t) => isTaskPublished(t))
     .filter((t) => dependencyState(store, t).ready);
 
   if (claimable.length === 0) {
     const blockers = normalized
-      .filter((t) => t.level !== 1 && t.status === TASK_STATUS.TODO)
+      .filter((t) => t.level !== 1 && [TASK_STATUS.TODO, TASK_STATUS.READY].includes(t.status))
       .filter((t) => (milestoneId ? t.parentTaskId === milestoneId : true))
       .map((t) => {
         if (!isTaskPublished(t)) {
@@ -703,7 +766,12 @@ function releaseNextLevelIfReady(store, milestoneId) {
     if (c.releaseState === TASK_RELEASE_STATE.PUBLISHED) continue;
     const idx = store.tasks.findIndex((t) => t.id === c.id);
     if (idx < 0) continue;
-    store.tasks[idx] = { ...c, releaseState: TASK_RELEASE_STATE.PUBLISHED, updatedAt: nowIso() };
+    store.tasks[idx] = {
+      ...c,
+      releaseState: TASK_RELEASE_STATE.PUBLISHED,
+      status: c.status === TASK_STATUS.TODO ? TASK_STATUS.READY : c.status,
+      updatedAt: nowIso()
+    };
     releasedCount += 1;
     releasedLevel = firstLevel;
   }
@@ -722,7 +790,12 @@ function releaseNextLevelIfReady(store, milestoneId) {
       if (idx < 0) continue;
       const cur = normalizeTaskRecord(store.tasks[idx]);
       if (cur.releaseState === TASK_RELEASE_STATE.PUBLISHED) continue;
-      store.tasks[idx] = { ...cur, releaseState: TASK_RELEASE_STATE.PUBLISHED, updatedAt: nowIso() };
+      store.tasks[idx] = {
+        ...cur,
+        releaseState: TASK_RELEASE_STATE.PUBLISHED,
+        status: cur.status === TASK_STATUS.TODO ? TASK_STATUS.READY : cur.status,
+        updatedAt: nowIso()
+      };
       releasedCount += 1;
       releasedLevel = nextLv;
     }
@@ -750,11 +823,11 @@ function getChildTasks(tasks, parentTaskId) {
 }
 
 function isDoneLike(status) {
-  return status === TASK_STATUS.DONE || status === TASK_STATUS.REVIEW || status === TASK_STATUS.INTEGRATED || status === TASK_STATUS.ACCEPTED;
+  return status === TASK_STATUS.DONE || status === TASK_STATUS.INTEGRATED;
 }
 
 function isDependencySatisfied(status) {
-  return status === TASK_STATUS.DONE || status === TASK_STATUS.INTEGRATED || status === TASK_STATUS.ACCEPTED;
+  return status === TASK_STATUS.DONE || status === TASK_STATUS.INTEGRATED;
 }
 
 function dependencyState(store, task) {
@@ -824,7 +897,7 @@ function collectMilestoneScope(store, milestoneId) {
   const taskIdSet = new Set([milestoneId, ...children.map((x) => x.id)]);
   const events = store.events.filter((e) => taskIdSet.has(e.taskId)).slice(-300).reverse();
   const carryContext = children
-    .filter((t) => t.status === TASK_STATUS.DONE || t.status === TASK_STATUS.REVIEW || t.status === TASK_STATUS.INTEGRATED)
+    .filter((t) => t.status === TASK_STATUS.DONE || t.status === TASK_STATUS.INTEGRATED)
     .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
     .map((t) => ({
       artifactPath: resolveArtifactDisplayPath(t.artifact || "", t.owner || ""),
@@ -947,7 +1020,7 @@ function setAgentStatus(agentId, status) {
 function countActiveOwnedTasks(agentId, store = null) {
   const s = store || readTaskStore();
   const tasks = (s.tasks || []).map(normalizeTaskRecord);
-  return tasks.filter((t) => t.owner === agentId && [TASK_STATUS.CLAIMED, TASK_STATUS.IN_PROGRESS, TASK_STATUS.REVIEW].includes(t.status)).length;
+  return tasks.filter((t) => t.owner === agentId && t.status === TASK_STATUS.EXECUTING).length;
 }
 
 function syncAgentBusyState(agentId, store = null) {
@@ -1130,7 +1203,7 @@ function repairMilestoneDependenciesAndStatus(store, milestoneId, forceSerial = 
     .filter((t) => t.parentTaskId === milestoneId && t.level !== 1); // insertion order
 
   // Rewind tasks that are marked completed while dependency not satisfied.
-  const completedLike = new Set([TASK_STATUS.DONE, TASK_STATUS.REVIEW, TASK_STATUS.INTEGRATED, TASK_STATUS.ACCEPTED]);
+  const completedLike = new Set([TASK_STATUS.DONE, TASK_STATUS.INTEGRATED]);
   let changed = true;
   let guard = 0;
   while (changed && guard < 8) {
@@ -1502,9 +1575,11 @@ function resolveAgentOccupancy(agentId, taskStore = null, groupStore = null, opt
     if (groupCount > 0) reasons.push(`讨论占用 ${groupCount}`);
     if (external.active && external.activityKind === "heartbeat") reasons.push("心跳巡检");
     if (external.active && external.activityKind !== "heartbeat") reasons.push("外部会话活跃");
+    const internalStatus = taskCount > 0 ? "busy_task" : "busy_discussion";
+    const internalLabel = taskCount > 0 ? "任务执行中" : "讨论进行中";
     return {
-      status: "busy",
-      statusLabel: "繁忙",
+      status: internalStatus,
+      statusLabel: internalLabel,
       statusReason: reasons.join(" · "),
       assignable: false,
       taskCount,
@@ -1655,7 +1730,9 @@ function collectAgents() {
         status: occupancy.status,
         statusLabel: occupancy.statusLabel,
         statusReason: occupancy.statusReason,
+        statusDetail: occupancy.statusReason,
         statusSource: occupancy.statusSource,
+        assignable: Boolean(occupancy.assignable),
         taskCount: occupancy.taskCount,
         groupCount: occupancy.groupCount,
         externalActiveAt: occupancy.externalActiveAt,
@@ -1711,7 +1788,9 @@ function collectAgents() {
       status: occupancy.status,
       statusLabel: occupancy.statusLabel,
       statusReason: occupancy.statusReason,
+      statusDetail: occupancy.statusReason,
       statusSource: occupancy.statusSource,
+      assignable: Boolean(occupancy.assignable),
       taskCount: occupancy.taskCount,
       groupCount: occupancy.groupCount,
       externalActiveAt: occupancy.externalActiveAt,
@@ -2470,7 +2549,7 @@ async function integrateMilestoneByMaster(milestoneId, masterAgentId, mode = "se
     e.pending = pending.map((x) => ({ id: x.id, title: x.title, status: x.status }));
     throw e;
   }
-  if ([TASK_STATUS.DONE, TASK_STATUS.ACCEPTED, TASK_STATUS.INTEGRATED].includes(scoped.milestone.status)) {
+  if ([TASK_STATUS.DONE, TASK_STATUS.INTEGRATED].includes(scoped.milestone.status)) {
     return { skipped: true, reason: "already_integrated", task: scoped.milestone };
   }
 
@@ -2487,13 +2566,13 @@ async function integrateMilestoneByMaster(milestoneId, masterAgentId, mode = "se
     const idx = store.tasks.findIndex((t) => t.id === milestoneId && Number(t.level) === 1);
     if (idx < 0) return null;
     const current = normalizeTaskRecord(store.tasks[idx]);
-    if ([TASK_STATUS.DONE, TASK_STATUS.ACCEPTED, TASK_STATUS.INTEGRATED].includes(current.status)) {
+    if ([TASK_STATUS.DONE, TASK_STATUS.INTEGRATED].includes(current.status)) {
       return current;
     }
     const next = {
       ...current,
       owner: masterAgentId,
-      status: isBlocked ? TASK_STATUS.BLOCKED : TASK_STATUS.DONE,
+      status: isBlocked ? TASK_STATUS.BLOCKED : TASK_STATUS.INTEGRATED,
       summary: String(parsedReply.summary || "").trim() || current.summary || sent.replyText.slice(0, 1200),
       artifact:
         ensuredArtifact.artifactRef ||
@@ -2542,7 +2621,7 @@ async function tryAutoIntegrateMilestone(milestoneId, source = "auto") {
 
   const scoped = collectMilestoneScope(readTaskStore(), id);
   if (!scoped) return { triggered: false, reason: "milestone_not_found" };
-  if ([TASK_STATUS.DONE, TASK_STATUS.ACCEPTED, TASK_STATUS.INTEGRATED].includes(scoped.milestone.status)) {
+  if ([TASK_STATUS.DONE, TASK_STATUS.INTEGRATED].includes(scoped.milestone.status)) {
     return { triggered: false, reason: "already_integrated" };
   }
   if (!scoped.children.length || scoped.children.some((x) => x.status !== TASK_STATUS.DONE)) {
@@ -2567,9 +2646,11 @@ async function tryAutoIntegrateMilestone(milestoneId, source = "auto") {
       appendTaskEvent(store, id, "milestone_auto_integrate_triggered", { source, masterAgentId });
     });
     const result = await integrateMilestoneByMaster(id, masterAgentId, "sessions_send", source);
+    markRuntimeDispatchOk(source, masterAgentId);
     return { triggered: true, masterAgentId, result };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    markRuntimeDispatchError(source, masterAgentId, msg);
     await mutateTaskStore(async (store) => {
       appendTaskEvent(store, id, "milestone_auto_integrate_failed", { source, masterAgentId, error: msg });
     });
@@ -2611,38 +2692,14 @@ async function executeHeartbeatTick(body, trigger = "api") {
     claimed = await mutateTaskStore(async (store) => {
       materializeMissingArtifactsInStore(store, milestoneId || null);
       const reclaimedCount = reclaimStaleClaims(store, milestoneId || null);
-      const reviewCandidates = store.tasks
-        .map(normalizeTaskRecord)
-        .filter((t) => t.level !== 1 && t.status === TASK_STATUS.REVIEW)
-        .filter((t) => (milestoneId ? t.parentTaskId === milestoneId : true))
-        .filter((t) => String(t.summary || "").trim() || resolveArtifactDisplayPath(t.artifact || "", t.owner || ""));
-      for (const task of reviewCandidates) {
-        const idx = store.tasks.findIndex((x) => x.id === task.id);
-        if (idx < 0) continue;
-        const next = {
-          ...normalizeTaskRecord(store.tasks[idx]),
-          status: TASK_STATUS.DONE,
-          updatedAt: nowIso()
-        };
-        store.tasks[idx] = next;
-        appendTaskEvent(store, task.id, "task_auto_review_closed", { from: TASK_STATUS.REVIEW, to: TASK_STATUS.DONE, reason: "heartbeat_autoclose" });
-        if (next.parentTaskId) releaseNextLevelIfReady(store, next.parentTaskId);
-        if (next.owner) {
-          const delta = Number.isFinite(Number(next.score)) ? Number(next.score) : 0;
-          if (delta > 0) {
-            updateAgentScore(next.owner, delta);
-            appendTaskEvent(store, task.id, "task_rewarded", { owner: next.owner, delta });
-          }
-        }
-      }
       const { picked, blockers } = pickClaimableTask(store, milestoneId || null, true);
       if (!picked) {
         const e = new Error(
           blockers.length > 0
-            ? `No claimable todo task available. blocked by: ${blockers
+            ? `No dispatchable task available. blocked by: ${blockers
                 .map((b) => `${b.title} <- [${(b.missing || []).join(", ")}]`)
                 .join(" | ")}`
-            : "No claimable todo task available."
+            : "No dispatchable task available."
         );
         e.code = 409;
         e.blockers = blockers;
@@ -2653,17 +2710,17 @@ async function executeHeartbeatTick(body, trigger = "api") {
       const next = {
         ...normalizeTaskRecord(store.tasks[idx]),
         owner: agentId,
-        status: TASK_STATUS.CLAIMED,
+        status: TASK_STATUS.EXECUTING,
         claimedAt: nowIso(),
         claimVersion: (Number(store.tasks[idx].claimVersion) || 0) + 1,
         updatedAt: nowIso()
       };
       store.tasks[idx] = next;
       setAgentStatus(agentId, "busy");
-      appendTaskEvent(store, next.id, "task_claimed", {
+      appendTaskEvent(store, next.id, "task_dispatched_started", {
         owner: agentId,
-        mode: "heartbeat",
-        strategy: "random_top_priority",
+        mode: "central",
+        strategy: "level_release_auto_dispatch",
         reclaimedBeforeClaim: reclaimedCount,
         trigger
       });
@@ -2671,7 +2728,7 @@ async function executeHeartbeatTick(body, trigger = "api") {
     });
 
     if (!claimed) {
-      const e = new Error("No claimable todo task available.");
+      const e = new Error("No dispatchable task available.");
       e.code = 404;
       throw e;
     }
@@ -2688,7 +2745,7 @@ async function executeHeartbeatTick(body, trigger = "api") {
       const normalizedReply = normalizeStructuredReply(parsedReply, sent.replyText, claimed.id);
       const ensuredArtifact = ensureArtifactForTask(agentId, claimed, normalizedReply, sent.replyText);
       const statusMap = { ok: TASK_STATUS.DONE, blocked: TASK_STATUS.BLOCKED, failed: TASK_STATUS.BLOCKED };
-      const nextStatus = statusMap[normalizedReply.status] || TASK_STATUS.CLAIMED;
+      const nextStatus = statusMap[normalizedReply.status] || TASK_STATUS.EXECUTING;
 
       nextTask = await mutateTaskStore(async (store) => {
         const idx = store.tasks.findIndex((t) => t.id === claimed.id);
@@ -2726,16 +2783,18 @@ async function executeHeartbeatTick(body, trigger = "api") {
         }
         return merged;
       });
+      markRuntimeDispatchOk(trigger, agentId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      markRuntimeDispatchError(trigger, agentId, msg);
       await mutateTaskStore(async (store) => {
         const idx = store.tasks.findIndex((t) => t.id === claimed.id);
         if (idx < 0) return;
         const latest = normalizeTaskRecord(store.tasks[idx]);
-        if (latest.status === TASK_STATUS.CLAIMED && latest.owner === agentId) {
+        if (latest.status === TASK_STATUS.EXECUTING && latest.owner === agentId) {
           store.tasks[idx] = {
             ...latest,
-            status: TASK_STATUS.TODO,
+            status: isTaskPublished(latest) ? TASK_STATUS.READY : TASK_STATUS.TODO,
             owner: "",
             claimedAt: null,
             updatedAt: nowIso()
@@ -3030,7 +3089,7 @@ app.get("/api/tasks", (req, res) => {
     const children = tasks.filter((x) => x.parentTaskId === m.id);
     const doneChildren = children.filter((x) => x.status === TASK_STATUS.DONE).length;
     const blockedChildren = children.filter((x) => x.status === TASK_STATUS.BLOCKED).length;
-    const inProgressChildren = children.filter((x) => x.status === TASK_STATUS.IN_PROGRESS || x.status === TASK_STATUS.CLAIMED).length;
+    const inProgressChildren = children.filter((x) => x.status === TASK_STATUS.EXECUTING).length;
     return {
       id: m.id,
       projectId: m.projectId,
@@ -3063,7 +3122,7 @@ app.get("/api/tasks", (req, res) => {
     }
     const p = projectMap.get(pid);
     p.milestoneTotal += 1;
-    if (m.status === TASK_STATUS.DONE) p.milestoneDone += 1;
+    if ([TASK_STATUS.DONE, TASK_STATUS.INTEGRATED].includes(m.status)) p.milestoneDone += 1;
     p.taskTotal += Number(m.childrenTotal || 0);
     p.taskDone += Number(m.childrenDone || 0);
     const mTask = tasks.find((x) => x.id === m.id);
@@ -3094,7 +3153,7 @@ app.get("/api/projects/:projectId", (req, res) => {
       id: projectId,
       title,
       milestoneTotal: milestones.length,
-      milestoneDone: milestones.filter((x) => x.status === TASK_STATUS.DONE).length,
+      milestoneDone: milestones.filter((x) => [TASK_STATUS.DONE, TASK_STATUS.INTEGRATED].includes(x.status)).length,
       taskTotal: children.length,
       taskDone: children.filter((x) => x.status === TASK_STATUS.DONE).length
     },
@@ -3164,31 +3223,11 @@ app.get("/api/logs", (req, res) => {
 });
 
 app.post("/api/tasks/materialize-missing-artifacts", async (req, res) => {
-  const milestoneId = String((req.body || {}).milestoneId || "").trim();
-  try {
-    const result = await mutateTaskStore(async (store) => {
-      return materializeMissingArtifactsInStore(store, milestoneId || null);
-    });
-    res.json({ ok: true, ...result, milestoneId: milestoneId || null });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: msg });
-  }
+  return sendError(res, 410, "Artifact maintenance is now internal-only.");
 });
 
 app.post("/api/milestones/:milestoneId/repair-flow", async (req, res) => {
-  const { milestoneId } = req.params;
-  const body = req.body || {};
-  const forceSerial = body.forceSerial !== false;
-  try {
-    const result = await mutateTaskStore(async (store) => {
-      return repairMilestoneDependenciesAndStatus(store, milestoneId, forceSerial);
-    });
-    res.json({ ok: true, milestoneId, forceSerial, ...result });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: msg });
-  }
+  return sendError(res, 410, "Manual flow repair has been removed from the public UI.");
 });
 
 app.get("/api/milestones/:milestoneId", (req, res) => {
@@ -3208,34 +3247,11 @@ app.get("/api/milestones/:milestoneId", (req, res) => {
 });
 
 app.post("/api/milestones/:milestoneId/release-next", async (req, res) => {
-  const { milestoneId } = req.params;
-  try {
-    const result = await mutateTaskStore(async (store) => {
-      const milestone = store.tasks.map(normalizeTaskRecord).find((x) => x.id === milestoneId && x.level === 1);
-      if (!milestone) return null;
-      const released = releaseNextLevelIfReady(store, milestoneId);
-      return released;
-    });
-    if (!result) return res.status(404).json({ error: "Milestone not found." });
-    res.json({ ok: true, milestoneId, ...result });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: msg });
-  }
+  return sendError(res, 410, "Manual level release has been removed. Levels release automatically.");
 });
 
 app.post("/api/tasks/reclaim-stale", async (req, res) => {
-  const milestoneId = String((req.body || {}).milestoneId || "").trim();
-  try {
-    const result = await mutateTaskStore(async (store) => {
-      const reclaimedCount = reclaimStaleClaims(store, milestoneId || null);
-      return { reclaimedCount };
-    });
-    res.json({ ok: true, milestoneId: milestoneId || null, ...result, ttlMs: taskClaimTtlMs });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: msg });
-  }
+  return sendError(res, 410, "Stale reclaim is now internal-only.");
 });
 
 app.post("/api/milestones/:milestoneId/integrate", async (req, res) => {
@@ -3294,7 +3310,7 @@ app.post("/api/tasks", async (req, res) => {
     owner: "",
     claimedAt: null,
     claimVersion: 0,
-    status: TASK_STATUS.TODO,
+    status: level === 1 ? TASK_STATUS.TODO : TASK_STATUS.TODO,
     artifact: "",
     nextInput: "",
     summary: "",
@@ -3310,155 +3326,15 @@ app.post("/api/tasks", async (req, res) => {
 });
 
 app.post("/api/tasks/auto-claim", async (req, res) => {
-  const agentId = String((req.body || {}).agentId || "").trim();
-  const milestoneId = String((req.body || {}).milestoneId || "").trim();
-  if (!parseAgentId(agentId)) return res.status(400).json({ error: "Invalid agent id." });
-  try {
-    const candidate = await mutateTaskStore(async (store) => {
-      const reclaimedCount = reclaimStaleClaims(store, milestoneId || null);
-      const { picked, blockers } = pickClaimableTask(store, milestoneId || null, true);
-      if (!picked) return null;
-      const idx = store.tasks.findIndex((t) => t.id === picked.id);
-      if (idx < 0) return null;
-      const next = {
-        ...normalizeTaskRecord(store.tasks[idx]),
-        owner: agentId,
-        status: TASK_STATUS.CLAIMED,
-        claimedAt: nowIso(),
-        claimVersion: (Number(store.tasks[idx].claimVersion) || 0) + 1,
-        updatedAt: nowIso()
-      };
-      store.tasks[idx] = next;
-      setAgentStatus(agentId, "busy");
-      appendTaskEvent(store, picked.id, "task_claimed", {
-        owner: agentId,
-        mode: "auto",
-        strategy: "random_top_priority",
-        reclaimedBeforeClaim: reclaimedCount,
-        blockersCount: (blockers || []).length,
-        milestoneId: picked.parentTaskId || null
-      });
-      return next;
-    });
-    if (!candidate) return res.status(404).json({ error: "No todo task available." });
-    syncAgentBusyState(agentId);
-    res.json({ ok: true, task: candidate });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: msg });
-  }
+  return sendError(res, 410, "Legacy manual task claim API has been removed. Use central auto dispatch.");
 });
 
 app.post("/api/tasks/:taskId/claim", async (req, res) => {
-  const { taskId } = req.params;
-  const agentId = String((req.body || {}).agentId || "").trim();
-  const force = Boolean((req.body || {}).force);
-  if (!parseAgentId(agentId)) return res.status(400).json({ error: "Invalid agent id." });
-  try {
-    const task = await mutateTaskStore(async (store) => {
-      const idx = store.tasks.findIndex((t) => t.id === taskId);
-      if (idx < 0) return null;
-      const current = normalizeTaskRecord(store.tasks[idx]);
-      if (current.level === 1) {
-        throw new Error("Milestone task cannot be claimed directly.");
-      }
-      if (!isTaskPublished(current)) {
-        const e = new Error("Task level is not published yet.");
-        e.code = 409;
-        throw e;
-      }
-      const dep = dependencyState(store, current);
-      if (!dep.ready) {
-        const e = new Error(`Dependency not ready: ${dep.missing.join(", ")}`);
-        e.code = 409;
-        throw e;
-      }
-      if (current.status !== TASK_STATUS.TODO && current.status !== TASK_STATUS.BLOCKED) {
-        if (force && [TASK_STATUS.CLAIMED, TASK_STATUS.IN_PROGRESS, TASK_STATUS.REVIEW].includes(current.status)) {
-          const next = {
-            ...current,
-            owner: agentId,
-            status: TASK_STATUS.CLAIMED,
-            claimedAt: nowIso(),
-            claimVersion: (Number(current.claimVersion) || 0) + 1,
-            updatedAt: nowIso()
-          };
-          store.tasks[idx] = next;
-          appendTaskEvent(store, taskId, "task_reclaimed", { owner: agentId, mode: "force", fromOwner: current.owner || "" });
-          return next;
-        }
-        const ownerName = current.owner || "unknown";
-        const reason = `Task is already occupied by ${ownerName}, status=${current.status}.`;
-        const e = new Error(reason);
-        e.code = 409;
-        throw e;
-      }
-      const next = {
-        ...current,
-        owner: agentId,
-        status: TASK_STATUS.CLAIMED,
-        claimedAt: nowIso(),
-        claimVersion: (Number(current.claimVersion) || 0) + 1,
-        updatedAt: nowIso()
-      };
-      store.tasks[idx] = next;
-      setAgentStatus(agentId, "busy");
-      appendTaskEvent(store, taskId, "task_claimed", { owner: agentId, mode: "manual" });
-      return next;
-    });
-    if (!task) return res.status(404).json({ error: "Task not found." });
-    syncAgentBusyState(agentId);
-    res.json({ ok: true, task });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const code = err && typeof err === "object" && "code" in err ? Number(err.code) : 500;
-    res.status(Number.isFinite(code) && code > 0 ? code : 500).json({ error: msg });
-  }
+  return sendError(res, 410, "Legacy manual task claim API has been removed. Use central auto dispatch.");
 });
 
 app.post("/api/tasks/:taskId/release", async (req, res) => {
-  const { taskId } = req.params;
-  const agentId = String((req.body || {}).agentId || "").trim();
-  const force = Boolean((req.body || {}).force);
-  try {
-    const task = await mutateTaskStore(async (store) => {
-      const idx = store.tasks.findIndex((t) => t.id === taskId);
-      if (idx < 0) return null;
-      const current = normalizeTaskRecord(store.tasks[idx]);
-      if (current.level === 1) {
-        const e = new Error("Milestone task cannot be released.");
-        e.code = 400;
-        throw e;
-      }
-      if (![TASK_STATUS.CLAIMED, TASK_STATUS.IN_PROGRESS, TASK_STATUS.BLOCKED, TASK_STATUS.REVIEW].includes(current.status)) {
-        const e = new Error(`Task is not claim-occupied: status=${current.status}`);
-        e.code = 409;
-        throw e;
-      }
-      if (!force && agentId && current.owner && current.owner !== agentId) {
-        const e = new Error(`Only owner can release this task: owner=${current.owner}`);
-        e.code = 409;
-        throw e;
-      }
-      const next = {
-        ...current,
-        owner: "",
-        status: TASK_STATUS.TODO,
-        claimedAt: null,
-        updatedAt: nowIso()
-      };
-      store.tasks[idx] = next;
-      appendTaskEvent(store, taskId, "task_released", { by: agentId || "system", force });
-      if (next.owner || current.owner) syncAgentBusyState(next.owner || current.owner, store);
-      return next;
-    });
-    if (!task) return res.status(404).json({ error: "Task not found." });
-    res.json({ ok: true, task });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const code = err && typeof err === "object" && "code" in err ? Number(err.code) : 500;
-    res.status(Number.isFinite(code) && code > 0 ? code : 500).json({ error: msg });
-  }
+  return sendError(res, 410, "Legacy manual task release API has been removed. Use central auto dispatch.");
 });
 
 app.delete("/api/tasks/:taskId", async (req, res) => {
@@ -3505,98 +3381,7 @@ app.delete("/api/tasks/:taskId", async (req, res) => {
 });
 
 app.post("/api/tasks/:taskId/status", async (req, res) => {
-  const { taskId } = req.params;
-  const body = req.body || {};
-  const status = String(body.status || "").trim();
-  const summary = String(body.summary || "").trim();
-  const artifact = String(body.artifact || "").trim();
-  const nextInput = String(body.nextInput || "").trim();
-  const rewardScore = Number(body.rewardScore);
-  const syncTaskMd = Boolean(body.syncTaskMd);
-
-  if (!validateTaskStatus(status)) return res.status(400).json({ error: "Invalid status." });
-  try {
-    const result = await mutateTaskStore(async (store) => {
-      const idx = store.tasks.findIndex((t) => t.id === taskId);
-      if (idx < 0) return null;
-      const task = normalizeTaskRecord(store.tasks[idx]);
-      const prevStatus = task.status;
-
-      const allowed = new Set([
-        `${TASK_STATUS.TODO}->${TASK_STATUS.CLAIMED}`,
-        `${TASK_STATUS.CLAIMED}->${TASK_STATUS.IN_PROGRESS}`,
-        `${TASK_STATUS.CLAIMED}->${TASK_STATUS.BLOCKED}`,
-        `${TASK_STATUS.IN_PROGRESS}->${TASK_STATUS.REVIEW}`,
-        `${TASK_STATUS.IN_PROGRESS}->${TASK_STATUS.BLOCKED}`,
-        `${TASK_STATUS.REVIEW}->${TASK_STATUS.DONE}`,
-        `${TASK_STATUS.REVIEW}->${TASK_STATUS.INTEGRATED}`,
-        `${TASK_STATUS.INTEGRATED}->${TASK_STATUS.DONE}`,
-        `${TASK_STATUS.INTEGRATED}->${TASK_STATUS.ACCEPTED}`,
-        `${TASK_STATUS.ACCEPTED}->${TASK_STATUS.DONE}`,
-        `${TASK_STATUS.REVIEW}->${TASK_STATUS.BLOCKED}`,
-        `${TASK_STATUS.INTEGRATED}->${TASK_STATUS.BLOCKED}`,
-        `${TASK_STATUS.ACCEPTED}->${TASK_STATUS.BLOCKED}`,
-        `${TASK_STATUS.BLOCKED}->${TASK_STATUS.CLAIMED}`,
-        `${TASK_STATUS.BLOCKED}->${TASK_STATUS.TODO}`
-      ]);
-      if (prevStatus !== status && !allowed.has(`${prevStatus}->${status}`)) {
-        const e = new Error(`Invalid transition: ${prevStatus} -> ${status}`);
-        e.code = 409;
-        throw e;
-      }
-
-      if (task.level === 1 && status === TASK_STATUS.DONE && !isMilestoneReadyForDone(store, task)) {
-        const e = new Error("Milestone can only be completed after all child tasks are done.");
-        e.code = 409;
-        throw e;
-      }
-
-      const next = {
-        ...task,
-        status,
-        summary: summary || task.summary || "",
-        artifact: artifact ? artifactToRef(task.owner || "", artifact) : task.artifact || "",
-        nextInput: nextInput || task.nextInput || "",
-        gateStatus:
-          task.level === 1 && status === TASK_STATUS.ACCEPTED
-            ? "passed"
-            : task.level === 1 && status === TASK_STATUS.BLOCKED
-              ? "blocked"
-              : task.gateStatus || "open",
-        updatedAt: nowIso()
-      };
-      store.tasks[idx] = next;
-      if (next.parentTaskId && next.status === TASK_STATUS.DONE) {
-        releaseNextLevelIfReady(store, next.parentTaskId);
-      }
-      appendTaskEvent(store, taskId, "task_status_updated", {
-        from: prevStatus,
-        to: status,
-        summary: next.summary
-      });
-
-      if (status === TASK_STATUS.DONE) {
-        const delta = Number.isFinite(rewardScore) ? rewardScore : next.score;
-        if (next.owner) {
-          updateAgentScore(next.owner, delta);
-          appendTaskEvent(store, taskId, "task_rewarded", { owner: next.owner, delta });
-        }
-      }
-      return next;
-    });
-
-    if (!result) return res.status(404).json({ error: "Task not found." });
-    const synced = syncTaskMd && result.owner ? appendTaskToTaskMd(result.owner, result) : false;
-    if (result.parentTaskId && result.status === TASK_STATUS.DONE) {
-      await tryAutoIntegrateMilestone(result.parentTaskId, "manual_status_done");
-    }
-    if (result.owner) syncAgentBusyState(result.owner);
-    res.json({ ok: true, task: result, syncedTaskMd: synced });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const code = err && typeof err === "object" && "code" in err ? Number(err.code) : 500;
-    res.status(Number.isFinite(code) && code > 0 ? code : 500).json({ error: msg });
-  }
+  return sendError(res, 410, "Legacy manual task status API has been removed. Task flow is now system-driven.");
 });
 
 app.post("/api/tasks/:taskId/checklist", async (req, res) => {
@@ -3604,74 +3389,11 @@ app.post("/api/tasks/:taskId/checklist", async (req, res) => {
 });
 
 app.post("/api/tasks/:taskId/dispatch", async (req, res) => {
-  const { taskId } = req.params;
-  const body = req.body || {};
-  const agentId = String(body.agentId || "").trim();
-  const mode = body.mode === "sessions_spawn" ? "sessions_spawn" : "sessions_send";
-  if (!parseAgentId(agentId)) return res.status(400).json({ error: "Invalid agent id." });
-  const state = getTaskById(taskId);
-  if (!state) return res.status(404).json({ error: "Task not found." });
-  const { store, idx, task } = state;
-  const parsed = parseAgentId(agentId);
-
-  try {
-    const transport = deriveChatTransport(parsed.source, parsed.dirName);
-    const latestStore = readTaskStore();
-    const carry = buildCarryContextForTask(latestStore, task, 10);
-    const goalContext = resolveTaskGoalContext(latestStore, task);
-    const prompt = buildTaskDispatchPrompt(task, carry, goalContext);
-    const sent = await sendTaskPromptWithFallback(transport, prompt, mode);
-    const replyText = sent.replyText;
-
-    const parsedReply = extractFirstJsonObject(replyText) || {};
-    const statusMap = { ok: TASK_STATUS.REVIEW, blocked: TASK_STATUS.BLOCKED, failed: TASK_STATUS.BLOCKED };
-    const nextStatus = statusMap[String(parsedReply.status || "").toLowerCase()] || task.status;
-    const ensuredArtifact = ensureArtifactForTask(agentId, task, parsedReply, replyText);
-
-    const nextTask = await mutateTaskStore(async (latestStore) => {
-      const latestIdx = latestStore.tasks.findIndex((t) => t.id === task.id);
-      if (latestIdx < 0) return null;
-      const latest = normalizeTaskRecord(latestStore.tasks[latestIdx]);
-      const merged = {
-        ...latest,
-        owner: latest.owner || agentId,
-        status: nextStatus,
-        summary: String(parsedReply.summary || "").trim() || latest.summary,
-        artifact: ensuredArtifact.artifactRef || artifactToRef(agentId, String(parsedReply.artifact || "").trim()) || latest.artifact,
-        nextInput: String(parsedReply.next_input || parsedReply.nextInput || "").trim() || latest.nextInput,
-        updatedAt: nowIso()
-      };
-      latestStore.tasks[latestIdx] = merged;
-      appendTaskEvent(latestStore, task.id, "task_dispatched", { agentId, mode: sent.usedMode, fallbackUsed: sent.fallbackUsed, nextStatus });
-      if (ensuredArtifact.created) {
-        appendTaskEvent(latestStore, task.id, "task_artifact_materialized", {
-          agentId,
-          path: ensuredArtifact.path
-        });
-      }
-      return merged;
-    });
-    if (!nextTask) return res.status(404).json({ error: "Task not found." });
-    res.json({ ok: true, task: nextTask, replyText, parsedReply, dispatchMode: sent.usedMode, fallbackUsed: sent.fallbackUsed });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await mutateTaskStore(async (latestStore) => {
-      appendTaskEvent(latestStore, task.id, "task_dispatch_failed", { agentId, error: msg });
-    });
-    res.status(500).json({ error: msg });
-  }
+  return sendError(res, 410, "Legacy manual dispatch API has been removed. Tasks are dispatched automatically.");
 });
 
 app.post("/api/tasks/heartbeat/tick", async (req, res) => {
-  try {
-    const result = await executeHeartbeatTick(req.body || {}, "api");
-    res.json(result);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const code = err && typeof err === "object" && "code" in err ? Number(err.code) : 500;
-    const blockers = err && typeof err === "object" && "blockers" in err ? err.blockers : undefined;
-    res.status(Number.isFinite(code) && code > 0 ? code : 500).json({ error: msg, blockers });
-  }
+  return sendError(res, 410, "Heartbeat pull is now internal-only. Use central dispatch.");
 });
 
 app.get("/api/group-sessions", (req, res) => {
@@ -4056,7 +3778,10 @@ app.post("/api/tasks/decompose", async (req, res) => {
           owner: "",
           claimedAt: null,
           claimVersion: 0,
-          status: TASK_STATUS.TODO,
+          status:
+            (Number.isFinite(Number(item.level)) ? Math.floor(Number(item.level)) : 1) <= 1
+              ? TASK_STATUS.READY
+              : TASK_STATUS.TODO,
           artifact: "",
           nextInput: "",
           summary: "",
@@ -4235,7 +3960,10 @@ function startCentralDispatchScheduler() {
         if (!occupancy.assignable) continue;
         try {
           await executeHeartbeatTick({ agentId: agent.id, mode: "sessions_send" }, "central_dispatch");
-        } catch {}
+          markRuntimeDispatchOk("central_dispatch", agent.id);
+        } catch (err) {
+          markRuntimeDispatchError("central_dispatch", agent.id, err);
+        }
       }
     } catch {}
   }, 15000);
@@ -4254,18 +3982,44 @@ function startGroupChatScheduler() {
         if (inflightGroupSessions.has(s.id)) continue;
         try {
           await executeGroupSessionTick(s.id, "scheduler");
-        } catch {}
+          markRuntimeDispatchOk("discussion_scheduler", s.id);
+        } catch (err) {
+          markRuntimeDispatchError("discussion_scheduler", s.id, err);
+        }
       }
     } catch {}
   }, 8000);
 }
 
+function buildRuntimeSnapshot() {
+  const taskStore = readTaskStore();
+  const groupStore = readGroupStore();
+  const normalizedTasks = (taskStore.tasks || []).map(normalizeTaskRecord);
+  const normalizedGroups = (groupStore.sessions || []).map(normalizeGroupSession);
+  return {
+    roots,
+    dispatchMode,
+    centralDispatchIntervalMs,
+    activeTaskCount: normalizedTasks.filter((x) => x.status === TASK_STATUS.EXECUTING).length,
+    blockedTaskCount: normalizedTasks.filter((x) => x.status === TASK_STATUS.BLOCKED).length,
+    activeDiscussionCount: normalizedGroups.filter((x) => x.status === "running").length,
+    heartbeatJobCount: readHeartbeatJobs().jobs.map(normalizeHeartbeatJob).length,
+    nextCentralDispatchAt: nextCentralDispatchAt ? new Date(nextCentralDispatchAt).toISOString() : null,
+    lastDispatchError: runtimeState.lastDispatchError || "",
+    lastDispatchErrorAt: runtimeState.lastDispatchErrorAt,
+    lastDispatchSource: runtimeState.lastDispatchSource || "",
+    lastDispatchTarget: runtimeState.lastDispatchTarget || "",
+    lastDispatchOkAt: runtimeState.lastDispatchOkAt
+  };
+}
+
 app.get("/health", (req, res) => {
-  res.json({
+  sendOk(res, {
     ok: true,
     dispatchMode,
     roots,
-    sources: sources.map((s) => ({ key: s.key, root: s.root, label: s.label }))
+    sources: sources.map((s) => ({ key: s.key, root: s.root, label: s.label })),
+    runtime: buildRuntimeSnapshot()
   });
 });
 
